@@ -41,6 +41,13 @@ FEEDBACK_SELECTORS = [
     "[role='alert']",
 ]
 
+ANNOUNCEMENT_CLOSE_SELECTORS = [
+    "button:has-text('我知道了')",
+    "button:has-text('知道了')",
+    "button:has-text('关闭')",
+    "[role='dialog'] button:has-text('我知道了')",
+]
+
 
 @dataclass
 class LinuxDoCredential:
@@ -141,15 +148,30 @@ class HybgzsCheckIn:
                 continue
         return False, ""
 
+    async def _dismiss_blocking_modal(self, page) -> bool:
+        clicked = False
+        for _ in range(3):
+            ok, _ = await self._click_first(page, ANNOUNCEMENT_CLOSE_SELECTORS)
+            if not ok:
+                break
+            clicked = True
+            await page.wait_for_timeout(600)
+        return clicked
+
     async def _login_via_linuxdo(self, page) -> tuple[bool, str]:
         if not self.credential:
             return False, "missing linuxdo credential"
 
         await page.goto(f"{BASE_URL}/login", wait_until="domcontentloaded")
+        await page.wait_for_timeout(1200)
+        await self._dismiss_blocking_modal(page)
         if await self._is_logged_in(page):
             return True, "session already active"
 
         clicked, used_selector = await self._click_first(page, LOGIN_BUTTON_SELECTORS)
+        if not clicked:
+            await self._dismiss_blocking_modal(page)
+            clicked, used_selector = await self._click_first(page, LOGIN_BUTTON_SELECTORS)
         if not clicked:
             await take_screenshot(page, "hybgzs_login_button_not_found", self.account_name)
             return False, "linuxdo login button not found"
