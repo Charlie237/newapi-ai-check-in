@@ -23,10 +23,10 @@ from utils.browser_utils import take_screenshot
 BASE_URL = "https://cdk.hybgzs.com"
 
 CHECKIN_BUTTON_SELECTORS = [
-    "button:has-text('\\u7acb\\u5373\\u7b7e\\u5230')",
-    "[role='button']:has-text('\\u7acb\\u5373\\u7b7e\\u5230')",
-    "button:has-text('\\u7b7e\\u5230')",
-    "[role='button']:has-text('\\u7b7e\\u5230')",
+    "button:has-text('\u7acb\u5373\u7b7e\u5230')",
+    "[role='button']:has-text('\u7acb\u5373\u7b7e\u5230')",
+    "button:has-text('\u7b7e\u5230')",
+    "[role='button']:has-text('\u7b7e\u5230')",
 ]
 
 LOGIN_BUTTON_SELECTORS = [
@@ -45,15 +45,15 @@ FEEDBACK_SELECTORS = [
 ]
 
 ANNOUNCEMENT_CLOSE_SELECTORS = [
-    "button:has-text('\\u6211\\u77e5\\u9053\\u4e86')",
-    "button:has-text('\\u77e5\\u9053\\u4e86')",
-    "button:has-text('\\u5173\\u95ed')",
-    "[role='dialog'] button:has-text('\\u6211\\u77e5\\u9053\\u4e86')",
+    "button:has-text('\u6211\u77e5\u9053\u4e86')",
+    "button:has-text('\u77e5\u9053\u4e86')",
+    "button:has-text('\u5173\u95ed')",
+    "[role='dialog'] button:has-text('\u6211\u77e5\u9053\u4e86')",
 ]
 
 TURNSTILE_MODAL_TEXTS = [
-    "\\u5b8c\\u6210\\u9a8c\\u8bc1\\u540e\\u81ea\\u52a8\\u7b7e\\u5230",
-    "\\u4f60\\u662f\\u771f\\u7684\\u4eba\\u7c7b\\u5417",
+    "\u5b8c\u6210\u9a8c\u8bc1\u540e\u81ea\u52a8\u7b7e\u5230",
+    "\u4f60\u662f\u771f\u7684\u4eba\u7c7b\u5417",
     "verify you are human",
 ]
 
@@ -203,8 +203,8 @@ class HybgzsCheckIn:
         if not text:
             return False
         hints = [
-            "\\u4eba\\u673a\\u9a8c\\u8bc1",
-            "\\u9a8c\\u8bc1",
+            "\u4eba\u673a\u9a8c\u8bc1",
+            "\u9a8c\u8bc1",
             "verify you are human",
             "turnstile",
             "captcha",
@@ -407,7 +407,7 @@ class HybgzsCheckIn:
 
         try:
             content = (await page.content()).lower()
-            if "system under maintenance" in content or "\\u7ad9\\u70b9\\u7ef4\\u62a4\\u4e2d" in content:
+            if "system under maintenance" in content or "\u7ad9\u70b9\u7ef4\u62a4\u4e2d" in content:
                 return True, {"skipped": True, "maintenance": True, "message": "site under maintenance page"}
         except Exception:
             pass
