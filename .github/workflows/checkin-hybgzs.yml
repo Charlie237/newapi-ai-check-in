@@ -70,6 +70,15 @@ jobs:
         if: steps.camoufox-cache.outputs.cache-hit != 'true'
         run: uv run camoufox fetch
 
+      - name: Restore storage-state cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            storage-states
+          key: hybgzs-storage-state-${{ hashFiles('storage-states/hybgzs_*_storage_state.json') }}
+          restore-keys: |
+            hybgzs-storage-state-
+
       - name: Run hybgzs checkin
         env:
           ACCOUNTS_HYBGZS: ${{ secrets.ACCOUNTS_HYBGZS }}
@@ -88,6 +97,14 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: uv run python -u checkin_hybgzs/main.py
+
+      - name: Save storage-state cache
+        if: hashFiles('storage-states/hybgzs_*_storage_state.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            storage-states
+          key: hybgzs-storage-state-${{ hashFiles('storage-states/hybgzs_*_storage_state.json') }}
 
       - name: Upload artifacts
         if: always()
