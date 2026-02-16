@@ -317,13 +317,6 @@ class HybgzsCheckIn:
             await self._dismiss_blocking_modal(page)
             clicked, used_selector = await self._click_first(page, LOGIN_BUTTON_SELECTORS)
         if not clicked:
-            try:
-                await page.goto(f"{BASE_URL}/api/oauth/linuxdo", wait_until="domcontentloaded")
-                clicked = True
-                used_selector = "direct:/api/oauth/linuxdo"
-            except Exception:
-                pass
-        if not clicked:
             await take_screenshot(page, "hybgzs_login_button_not_found", self.account_name)
             excerpt = ""
             try:
