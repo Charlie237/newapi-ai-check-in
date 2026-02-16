@@ -11,6 +11,8 @@ Flow:
 
 from __future__ import annotations
 
+import hashlib
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urlparse
@@ -73,6 +75,7 @@ class HybgzsCheckIn:
         proxy: dict | None = None,
         run_wheel: bool = True,
         max_wheel_spins: int = 5,
+        storage_state_dir: str = "storage-states",
         debug: bool = False,
     ):
         self.account_name = account_name
@@ -81,9 +84,17 @@ class HybgzsCheckIn:
         self.proxy = proxy
         self.run_wheel = run_wheel
         self.max_wheel_spins = max(0, int(max_wheel_spins))
+        self.storage_state_dir = storage_state_dir
         self.debug = debug
         self._click_solver: ClickSolver | None = None
         self._solver_prepared = False
+        os.makedirs(self.storage_state_dir, exist_ok=True)
+
+    def _storage_state_path(self) -> str | None:
+        if not self.credential or not self.credential.username:
+            return None
+        username_hash = hashlib.sha256(self.credential.username.encode("utf-8")).hexdigest()[:8]
+        return os.path.join(self.storage_state_dir, f"hybgzs_{username_hash}_storage_state.json")
 
     @staticmethod
     def _build_browser_cookies(base_url: str, cookies: dict) -> list[dict]:
@@ -532,6 +543,8 @@ class HybgzsCheckIn:
 
         details: list[str] = []
         browser_cookies = self._build_browser_cookies(BASE_URL, self.cookies)
+        storage_state_path = self._storage_state_path()
+        storage_state = storage_state_path if storage_state_path and os.path.exists(storage_state_path) else None
 
         async with AsyncCamoufox(
             headless=not self.debug,
@@ -541,7 +554,23 @@ class HybgzsCheckIn:
             proxy=self.proxy,
             os="macos",
         ) as browser:
-            context = await browser.new_context()
+            if storage_state_path:
+                details.append(f"[cache] storage-state {'hit' if storage_state else 'miss'}")
+
+            if storage_state:
+                try:
+                    context = await browser.new_context(storage_state=storage_state)
+                except Exception as exc:
+                    details.append(f"[cache] restore failed, fallback fresh context: {exc}")
+                    try:
+                        os.remove(storage_state)
+                        details.append("[cache] removed invalid storage-state cache")
+                    except Exception:
+                        pass
+                    context = await browser.new_context()
+            else:
+                context = await browser.new_context()
+
             page = await context.new_page()
 
             try:
@@ -560,8 +589,25 @@ class HybgzsCheckIn:
                     details.append(f"[login] {login_msg}")
                     if not login_ok:
                         return False, {"error": "login failed", "details": details}
+                    if storage_state_path:
+                        try:
+                            await context.storage_state(path=storage_state_path)
+                            details.append("[cache] storage-state saved")
+                        except Exception as exc:
+                            details.append(f"[cache] save failed: {exc}")
                 else:
-                    details.append("[login] session restored from cookies")
+                    if storage_state and not browser_cookies:
+                        details.append("[login] session restored from storage-state cache")
+                    elif browser_cookies:
+                        details.append("[login] session restored from cookies")
+                    else:
+                        details.append("[login] session already active")
+                    if storage_state_path:
+                        try:
+                            await context.storage_state(path=storage_state_path)
+                            details.append("[cache] storage-state saved")
+                        except Exception as exc:
+                            details.append(f"[cache] save failed: {exc}")
 
                 checkin_ok, checkin_result = await self._run_checkin(page)
                 details.append(f"[checkin] {checkin_result}")
