@@ -4,8 +4,9 @@ Standalone hybgzs check-in runner.
 
 Flow:
 1) Restore session from cookies (if provided) or login with LinuxDo credentials.
-2) Open daily check-in page and click check-in button (Turnstile is solved by browser flow).
-3) Call wheel API to consume remaining spins.
+2) Open daily check-in page and click check-in button.
+3) Solve Turnstile if required.
+4) Call wheel API to consume remaining spins.
 """
 
 from __future__ import annotations
@@ -22,9 +23,10 @@ from utils.browser_utils import take_screenshot
 BASE_URL = "https://cdk.hybgzs.com"
 
 CHECKIN_BUTTON_SELECTORS = [
-    "button:has-text('立即签到')",
-    "button:has-text('签到')",
-    "[role='button']:has-text('签到')",
+    "button:has-text('\\u7acb\\u5373\\u7b7e\\u5230')",
+    "[role='button']:has-text('\\u7acb\\u5373\\u7b7e\\u5230')",
+    "button:has-text('\\u7b7e\\u5230')",
+    "[role='button']:has-text('\\u7b7e\\u5230')",
 ]
 
 LOGIN_BUTTON_SELECTORS = [
@@ -43,10 +45,16 @@ FEEDBACK_SELECTORS = [
 ]
 
 ANNOUNCEMENT_CLOSE_SELECTORS = [
-    "button:has-text('我知道了')",
-    "button:has-text('知道了')",
-    "button:has-text('关闭')",
-    "[role='dialog'] button:has-text('我知道了')",
+    "button:has-text('\\u6211\\u77e5\\u9053\\u4e86')",
+    "button:has-text('\\u77e5\\u9053\\u4e86')",
+    "button:has-text('\\u5173\\u95ed')",
+    "[role='dialog'] button:has-text('\\u6211\\u77e5\\u9053\\u4e86')",
+]
+
+TURNSTILE_MODAL_TEXTS = [
+    "\\u5b8c\\u6210\\u9a8c\\u8bc1\\u540e\\u81ea\\u52a8\\u7b7e\\u5230",
+    "\\u4f60\\u662f\\u771f\\u7684\\u4eba\\u7c7b\\u5417",
+    "verify you are human",
 ]
 
 
@@ -74,6 +82,8 @@ class HybgzsCheckIn:
         self.run_wheel = run_wheel
         self.max_wheel_spins = max(0, int(max_wheel_spins))
         self.debug = debug
+        self._click_solver: ClickSolver | None = None
+        self._solver_prepared = False
 
     @staticmethod
     def _build_browser_cookies(base_url: str, cookies: dict) -> list[dict]:
@@ -140,10 +150,21 @@ class HybgzsCheckIn:
     async def _click_first(self, page, selectors: list[str]) -> tuple[bool, str]:
         for selector in selectors:
             try:
-                locator = page.locator(selector).first
-                if await locator.count() == 0:
+                locator = page.locator(selector)
+                count = await locator.count()
+                if count == 0:
                     continue
-                await locator.click(timeout=5000)
+                for idx in range(count):
+                    candidate = locator.nth(idx)
+                    try:
+                        if not await candidate.is_visible(timeout=400):
+                            continue
+                        await candidate.click(timeout=5000)
+                        return True, selector
+                    except Exception:
+                        continue
+                # Fall back to first match when visibility probing is unreliable.
+                await locator.first.click(timeout=3500)
                 return True, selector
             except Exception:
                 continue
@@ -176,6 +197,79 @@ class HybgzsCheckIn:
         except Exception:
             return False
 
+    @staticmethod
+    def _text_contains_turnstile_hint(text: str) -> bool:
+        text = (text or "").lower()
+        if not text:
+            return False
+        hints = [
+            "\\u4eba\\u673a\\u9a8c\\u8bc1",
+            "\\u9a8c\\u8bc1",
+            "verify you are human",
+            "turnstile",
+            "captcha",
+        ]
+        return any(hint in text for hint in hints)
+
+    async def _prepare_click_solver(self, page) -> bool:
+        if self._solver_prepared and self._click_solver is not None:
+            return True
+        try:
+            self._click_solver = ClickSolver(
+                framework=FrameworkType.CAMOUFOX,
+                page=page,
+                max_attempts=4,
+                attempt_delay=2,
+            )
+            # Must run before target pages load so unlockShadowRoot init script is effective.
+            await self._click_solver.prepare()
+            self._solver_prepared = True
+            return True
+        except Exception:
+            self._click_solver = None
+            self._solver_prepared = False
+            return False
+
+    async def _cleanup_click_solver(self) -> None:
+        if self._click_solver is None:
+            return
+        try:
+            await self._click_solver.cleanup()
+        except Exception:
+            pass
+        finally:
+            self._click_solver = None
+            self._solver_prepared = False
+
+    async def _is_turnstile_modal_visible(self, page) -> bool:
+        for text in TURNSTILE_MODAL_TEXTS:
+            try:
+                locator = page.locator(f"text={text}").first
+                if await locator.count() == 0:
+                    continue
+                if await locator.is_visible(timeout=400):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _has_turnstile_markers(self, page) -> bool:
+        try:
+            return bool(
+                await page.evaluate(
+                    """() => {
+                        const hasCfScript = !!document.querySelector("script[src*='challenges.cloudflare.com/turnstile']");
+                        const hasCfInput = !!document.querySelector("input[name='cf-turnstile-response'], textarea[name='cf-turnstile-response']");
+                        const hasCfIframe = !!document.querySelector("iframe[src*='challenges.cloudflare.com']");
+                        const text = (document.body?.innerText || "").toLowerCase();
+                        const hasHumanText = text.includes("verify you are human") || text.includes("人机验证");
+                        return hasCfScript || hasCfInput || hasCfIframe || hasHumanText;
+                    }"""
+                )
+            )
+        except Exception:
+            return False
+
     async def _solve_cf_challenge(self, page) -> bool:
         try:
             has_cf_iframe = await page.locator("iframe[src*='challenges.cloudflare.com']").count()
@@ -184,16 +278,12 @@ class HybgzsCheckIn:
                 await page.wait_for_timeout(6000)
                 return True
 
-            async with ClickSolver(
-                framework=FrameworkType.CAMOUFOX,
-                page=page,
-                max_attempts=3,
-                attempt_delay=3,
-            ) as solver:
-                await solver.solve_captcha(
-                    captcha_container=page,
-                    captcha_type=CaptchaType.CLOUDFLARE_INTERSTITIAL,
-                )
+            if not await self._prepare_click_solver(page):
+                return False
+            await self._click_solver.solve_captcha(
+                captcha_container=page,
+                captcha_type=CaptchaType.CLOUDFLARE_INTERSTITIAL,
+            )
             await page.wait_for_timeout(3000)
             return True
         except Exception:
@@ -201,18 +291,14 @@ class HybgzsCheckIn:
 
     async def _solve_turnstile_checkbox(self, page) -> bool:
         try:
-            async with ClickSolver(
-                framework=FrameworkType.CAMOUFOX,
-                page=page,
-                max_attempts=4,
-                attempt_delay=2,
-            ) as solver:
-                await solver.solve_captcha(
-                    captcha_container=page,
-                    captcha_type=CaptchaType.CLOUDFLARE_TURNSTILE,
-                )
+            if not await self._prepare_click_solver(page):
+                return False
+            await self._click_solver.solve_captcha(
+                captcha_container=page,
+                captcha_type=CaptchaType.CLOUDFLARE_TURNSTILE,
+            )
             await page.wait_for_timeout(2500)
-            return True
+            return not await self._is_turnstile_modal_visible(page)
         except Exception:
             return False
 
@@ -231,8 +317,22 @@ class HybgzsCheckIn:
             await self._dismiss_blocking_modal(page)
             clicked, used_selector = await self._click_first(page, LOGIN_BUTTON_SELECTORS)
         if not clicked:
+            try:
+                await page.goto(f"{BASE_URL}/api/oauth/linuxdo", wait_until="domcontentloaded")
+                clicked = True
+                used_selector = "direct:/api/oauth/linuxdo"
+            except Exception:
+                pass
+        if not clicked:
             await take_screenshot(page, "hybgzs_login_button_not_found", self.account_name)
-            return False, "linuxdo login button not found"
+            excerpt = ""
+            try:
+                excerpt = await page.evaluate(
+                    """() => (document.body?.innerText || "").replace(/\\s+/g, " ").slice(0, 180)"""
+                )
+            except Exception:
+                pass
+            return False, f"linuxdo login button not found (url={page.url}, excerpt={excerpt})"
 
         login_submitted = False
         approve_clicked = False
@@ -314,7 +414,7 @@ class HybgzsCheckIn:
 
         try:
             content = (await page.content()).lower()
-            if "system under maintenance" in content or "站点维护中" in content:
+            if "system under maintenance" in content or "\\u7ad9\\u70b9\\u7ef4\\u62a4\\u4e2d" in content:
                 return True, {"skipped": True, "maintenance": True, "message": "site under maintenance page"}
         except Exception:
             pass
@@ -330,14 +430,18 @@ class HybgzsCheckIn:
             return False, {"error": f"checkin button not found ({err2 or err})"}
 
         await page.wait_for_timeout(1200)
-        try:
-            page_text = (await page.content()).lower()
-            if "verify you are human" in page_text or "你是人类吗" in page_text:
-                await self._solve_turnstile_checkbox(page)
-        except Exception:
-            pass
+        solved_turnstile = False
+        if await self._is_turnstile_modal_visible(page) or await self._has_turnstile_markers(page):
+            solved_turnstile = await self._solve_turnstile_checkbox(page)
+            # If verification completed but check-in did not auto-submit, retry once.
+            if solved_turnstile:
+                await page.wait_for_timeout(900)
+                ok_retry, _ = await self._click_first(page, [selector, *CHECKIN_BUTTON_SELECTORS])
+                if ok_retry:
+                    await page.wait_for_timeout(900)
 
-        for _ in range(35):
+        err3 = ""
+        for idx in range(35):
             ok3, done3, err3 = await self._query_checkin_today(page)
             if ok3 and done3:
                 feedback = await self._extract_feedback_text(page)
@@ -345,7 +449,21 @@ class HybgzsCheckIn:
                     "already": False,
                     "selector": selector,
                     "message": feedback or "checkin completed",
+                    "turnstile_solved": solved_turnstile,
                 }
+
+            if idx in {8, 16}:
+                api_submit = await self._fetch_json(page, "/api/checkin", method="POST")
+                text = str((api_submit.get("json") or {}).get("error") or api_submit.get("text") or "")
+                if api_submit.get("status") == 200:
+                    await page.wait_for_timeout(1200)
+                elif self._text_contains_turnstile_hint(text):
+                    solved_turnstile = await self._solve_turnstile_checkbox(page) or solved_turnstile
+                    if solved_turnstile:
+                        await page.wait_for_timeout(900)
+                        await self._click_first(page, [selector, *CHECKIN_BUTTON_SELECTORS])
+                await page.wait_for_timeout(700)
+
             await page.wait_for_timeout(2000)
 
         feedback = await self._extract_feedback_text(page)
@@ -426,6 +544,9 @@ class HybgzsCheckIn:
             page = await context.new_page()
 
             try:
+                solver_ready = await self._prepare_click_solver(page)
+                details.append(f"[captcha] solver prepared={solver_ready}")
+
                 if browser_cookies:
                     await context.add_cookies(browser_cookies)
                     details.append(f"[cookie] loaded {len(browser_cookies)} cookies")
@@ -459,5 +580,6 @@ class HybgzsCheckIn:
                 await take_screenshot(page, "hybgzs_execute_exception", self.account_name)
                 return False, {"error": f"runtime exception: {exc}", "details": details}
             finally:
+                await self._cleanup_click_solver()
                 await page.close()
                 await context.close()
