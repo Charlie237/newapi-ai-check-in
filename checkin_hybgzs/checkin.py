@@ -287,15 +287,26 @@ class HybgzsCheckIn:
 
     async def _run_checkin(self, page) -> tuple[bool, dict]:
         ok, done, err = await self._query_checkin_today(page)
+        if err and "http=503" in err:
+            return True, {"skipped": True, "maintenance": True, "message": "site under maintenance (503)"}
         if ok and done:
             return True, {"already": True, "message": "already checked in today"}
 
         await page.goto(f"{BASE_URL}/gas-station/checkin", wait_until="domcontentloaded")
         await page.wait_for_timeout(1200)
 
+        try:
+            content = (await page.content()).lower()
+            if "system under maintenance" in content or "站点维护中" in content:
+                return True, {"skipped": True, "maintenance": True, "message": "site under maintenance page"}
+        except Exception:
+            pass
+
         clicked, selector = await self._click_first(page, CHECKIN_BUTTON_SELECTORS)
         if not clicked:
             ok2, done2, err2 = await self._query_checkin_today(page)
+            if err2 and "http=503" in err2:
+                return True, {"skipped": True, "maintenance": True, "message": "site under maintenance (503)"}
             if ok2 and done2:
                 return True, {"already": True, "message": "already checked in today"}
             await take_screenshot(page, "hybgzs_checkin_button_not_found", self.account_name)
@@ -409,6 +420,9 @@ class HybgzsCheckIn:
                 details.append(f"[checkin] {checkin_result}")
                 if not checkin_ok:
                     return False, {"error": "checkin failed", "details": details}
+                if checkin_result.get("maintenance"):
+                    details.append("[maintenance] skip wheel while site is under maintenance")
+                    return True, {"display": "hybgzs skipped: maintenance", "details": details}
 
                 wheel_ok, wheel_result = await self._run_wheel(page)
                 details.append(f"[wheel] {wheel_result}")
