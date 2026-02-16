@@ -199,6 +199,23 @@ class HybgzsCheckIn:
         except Exception:
             return False
 
+    async def _solve_turnstile_checkbox(self, page) -> bool:
+        try:
+            async with ClickSolver(
+                framework=FrameworkType.CAMOUFOX,
+                page=page,
+                max_attempts=4,
+                attempt_delay=2,
+            ) as solver:
+                await solver.solve_captcha(
+                    captcha_container=page,
+                    captcha_type=CaptchaType.CLOUDFLARE_TURNSTILE,
+                )
+            await page.wait_for_timeout(2500)
+            return True
+        except Exception:
+            return False
+
     async def _login_via_linuxdo(self, page) -> tuple[bool, str]:
         if not self.credential:
             return False, "missing linuxdo credential"
@@ -311,6 +328,14 @@ class HybgzsCheckIn:
                 return True, {"already": True, "message": "already checked in today"}
             await take_screenshot(page, "hybgzs_checkin_button_not_found", self.account_name)
             return False, {"error": f"checkin button not found ({err2 or err})"}
+
+        await page.wait_for_timeout(1200)
+        try:
+            page_text = (await page.content()).lower()
+            if "verify you are human" in page_text or "你是人类吗" in page_text:
+                await self._solve_turnstile_checkbox(page)
+        except Exception:
+            pass
 
         for _ in range(35):
             ok3, done3, err3 = await self._query_checkin_today(page)
