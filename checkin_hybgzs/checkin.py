@@ -168,12 +168,22 @@ class HybgzsCheckIn:
             if "just a moment" in title:
                 return True
             content = (await page.content()).lower()
-            return "checking your browser" in content or "cloudflare" in content
+            if "checking your browser before accessing" in content:
+                return True
+            if "attention required!" in title:
+                return True
+            return False
         except Exception:
             return False
 
     async def _solve_cf_challenge(self, page) -> bool:
         try:
+            has_cf_iframe = await page.locator("iframe[src*='challenges.cloudflare.com']").count()
+            if has_cf_iframe == 0:
+                # Some challenge pages auto-redirect after JS checks; don't force click solver.
+                await page.wait_for_timeout(6000)
+                return True
+
             async with ClickSolver(
                 framework=FrameworkType.CAMOUFOX,
                 page=page,
