@@ -15,6 +15,7 @@ from datetime import datetime
 from urllib.parse import urlparse
 
 from camoufox.async_api import AsyncCamoufox
+from playwright_captcha import CaptchaType, ClickSolver, FrameworkType
 
 from utils.browser_utils import take_screenshot
 
@@ -158,6 +159,36 @@ class HybgzsCheckIn:
             await page.wait_for_timeout(600)
         return clicked
 
+    async def _is_cf_challenge_page(self, page) -> bool:
+        try:
+            url = page.url.lower()
+            if "__cf_chl_rt_tk" in url or "linux.do/challenge" in url:
+                return True
+            title = (await page.title()).lower()
+            if "just a moment" in title:
+                return True
+            content = (await page.content()).lower()
+            return "checking your browser" in content or "cloudflare" in content
+        except Exception:
+            return False
+
+    async def _solve_cf_challenge(self, page) -> bool:
+        try:
+            async with ClickSolver(
+                framework=FrameworkType.CAMOUFOX,
+                page=page,
+                max_attempts=3,
+                attempt_delay=3,
+            ) as solver:
+                await solver.solve_captcha(
+                    captcha_container=page,
+                    captcha_type=CaptchaType.CLOUDFLARE_INTERSTITIAL,
+                )
+            await page.wait_for_timeout(3000)
+            return True
+        except Exception:
+            return False
+
     async def _login_via_linuxdo(self, page) -> tuple[bool, str]:
         if not self.credential:
             return False, "missing linuxdo credential"
@@ -178,17 +209,27 @@ class HybgzsCheckIn:
 
         login_submitted = False
         approve_clicked = False
+        cf_solved_count = 0
 
-        for _ in range(90):
+        for _ in range(140):
             if await self._is_logged_in(page):
                 state = "logged in"
                 if login_submitted:
                     state += " (credential flow)"
                 if approve_clicked:
                     state += " (oauth approved)"
+                if cf_solved_count:
+                    state += f" (cf solved x{cf_solved_count})"
                 return True, f"{state}, trigger={used_selector}"
 
             url = page.url.lower()
+
+            if await self._is_cf_challenge_page(page):
+                solved = await self._solve_cf_challenge(page)
+                if solved:
+                    cf_solved_count += 1
+                await page.wait_for_timeout(1200)
+                continue
 
             if "linux.do/login" in url and not login_submitted:
                 try:
