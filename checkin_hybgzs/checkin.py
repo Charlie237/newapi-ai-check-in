@@ -513,9 +513,17 @@ class HybgzsCheckIn:
         for _ in range(spins_to_run):
             spin_ok, info = await self._wheel_spin_once(page)
             if not spin_ok:
-                return False, {"error": info.get("error", "wheel spin failed"), "results": items}
+                err = str(info.get("error", "wheel spin failed"))
+                if "http=429" in err:
+                    return True, {
+                        "spins": len(items),
+                        "results": items,
+                        "rate_limited": True,
+                        "message": "wheel rate limited, stop further spins",
+                    }
+                return False, {"error": err, "results": items}
             items.append(info)
-            await page.wait_for_timeout(900)
+            await page.wait_for_timeout(1500)
 
         return True, {"spins": len(items), "results": items}
 
