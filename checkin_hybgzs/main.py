@@ -36,7 +36,7 @@ class AccountConfig:
     cookies: dict
     credential: LinuxDoCredential | None
     run_wheel: bool
-    max_wheel_spins: int = 5
+    max_wheel_spins: int = 0
 
 
 def _strip_code_fence(text: str) -> str:
@@ -74,7 +74,7 @@ def _to_bool(value, default: bool = True) -> bool:
     return default
 
 
-def _to_non_negative_int(value, default: int = 5) -> int:
+def _to_non_negative_int(value, default: int = 0) -> int:
     try:
         parsed = int(str(value).strip())
     except Exception:
@@ -178,7 +178,7 @@ def load_accounts() -> list[AccountConfig]:
         cookies = {}
         credential = None
         run_wheel = True
-        max_wheel_spins = 5
+        max_wheel_spins = 0
 
         if isinstance(item, str):
             cookies = parse_cookies(item)
@@ -187,7 +187,7 @@ def load_accounts() -> list[AccountConfig]:
             cookies = parse_cookies(item.get("cookies", ""))
             credential = _pick_credential(item, global_linuxdo, idx)
             run_wheel = _to_bool(item.get("wheel"), default=True)
-            max_wheel_spins = _to_non_negative_int(item.get("max_wheel_spins", 5), default=5)
+            max_wheel_spins = _to_non_negative_int(item.get("max_wheel_spins", 0), default=0)
         else:
             continue
 

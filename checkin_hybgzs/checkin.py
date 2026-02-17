@@ -74,7 +74,7 @@ class HybgzsCheckIn:
         credential: LinuxDoCredential | None = None,
         proxy: dict | None = None,
         run_wheel: bool = True,
-        max_wheel_spins: int = 5,
+        max_wheel_spins: int = 0,
         storage_state_dir: str = "storage-states",
         debug: bool = False,
     ):
