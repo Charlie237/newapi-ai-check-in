@@ -90,6 +90,10 @@ class HybgzsCheckIn:
         self._solver_prepared = False
         os.makedirs(self.storage_state_dir, exist_ok=True)
 
+    def _debug_log(self, message: str) -> None:
+        if self.debug:
+            print(f"[hybgzs:{self.account_name}] {message}")
+
     def _storage_state_path(self) -> str | None:
         if not self.credential or not self.credential.username:
             return None
@@ -269,14 +273,52 @@ class HybgzsCheckIn:
             return bool(
                 await page.evaluate(
                     """() => {
-                        const hasCfScript = !!document.querySelector("script[src*='challenges.cloudflare.com/turnstile']");
-                        const hasCfInput = !!document.querySelector("input[name='cf-turnstile-response'], textarea[name='cf-turnstile-response']");
-                        const hasCfIframe = !!document.querySelector("iframe[src*='challenges.cloudflare.com']");
+                        const roots = [document];
+                        const visited = new Set([document]);
+                        let hasCfScript = false;
+                        let hasCfInput = false;
+                        let hasCfIframe = false;
+
+                        while (roots.length) {
+                            const root = roots.shift();
+                            if (!root || !root.querySelectorAll) continue;
+
+                            if (!hasCfScript && root.querySelector("script[src*='challenges.cloudflare.com/turnstile']")) {
+                                hasCfScript = true;
+                            }
+                            if (!hasCfInput && root.querySelector("input[name='cf-turnstile-response'], textarea[name='cf-turnstile-response']")) {
+                                hasCfInput = true;
+                            }
+                            if (!hasCfIframe) {
+                                const iframes = Array.from(root.querySelectorAll("iframe"));
+                                hasCfIframe = iframes.some((frame) => {
+                                    const src = (frame.getAttribute("src") || "").toLowerCase();
+                                    const title = (frame.getAttribute("title") || "").toLowerCase();
+                                    return (
+                                        src.includes("challenges.cloudflare.com") ||
+                                        src.includes("turnstile") ||
+                                        title.includes("cloudflare") ||
+                                        title.includes("turnstile")
+                                    );
+                                });
+                            }
+
+                            const hosts = root.querySelectorAll("*");
+                            for (const host of hosts) {
+                                const shadow = host.shadowRoot;
+                                if (shadow && !visited.has(shadow)) {
+                                    visited.add(shadow);
+                                    roots.push(shadow);
+                                }
+                            }
+                        }
+
                         const text = (document.body?.innerText || "").toLowerCase();
                         const hasHumanText =
                             text.includes("verify you are human") ||
                             text.includes("人机验证") ||
-                            text.includes("你是真的人类吗");
+                            text.includes("你是真的人类吗") ||
+                            text.includes("完成验证后自动签到");
                         return hasCfScript || hasCfInput || hasCfIframe || hasHumanText;
                     }"""
                 )
@@ -284,47 +326,230 @@ class HybgzsCheckIn:
         except Exception:
             return False
 
+    async def _count_turnstile_iframes_deep(self, page) -> int:
+        try:
+            value = await page.evaluate(
+                """() => {
+                    const roots = [document];
+                    const visited = new Set([document]);
+                    let count = 0;
+
+                    while (roots.length) {
+                        const root = roots.shift();
+                        if (!root || !root.querySelectorAll) continue;
+
+                        const iframes = Array.from(root.querySelectorAll("iframe"));
+                        for (const frame of iframes) {
+                            const src = (frame.getAttribute("src") || "").toLowerCase();
+                            const title = (frame.getAttribute("title") || "").toLowerCase();
+                            if (
+                                src.includes("challenges.cloudflare.com") ||
+                                src.includes("turnstile") ||
+                                title.includes("cloudflare") ||
+                                title.includes("turnstile")
+                            ) {
+                                count += 1;
+                            }
+                        }
+
+                        const hosts = root.querySelectorAll("*");
+                        for (const host of hosts) {
+                            const shadow = host.shadowRoot;
+                            if (shadow && !visited.has(shadow)) {
+                                visited.add(shadow);
+                                roots.push(shadow);
+                            }
+                        }
+                    }
+
+                    return count;
+                }"""
+            )
+            return int(value or 0)
+        except Exception:
+            return 0
+
+    async def _collect_turnstile_click_points(self, page) -> list[dict]:
+        try:
+            points = await page.evaluate(
+                """() => {
+                    const points = [];
+                    const pointKeys = new Set();
+                    const roots = [document];
+                    const visited = new Set([document]);
+                    const patterns = [
+                        /verify you are human/i,
+                        /cloudflare/i,
+                        /\\u4eba\\u673a\\u9a8c\\u8bc1/,
+                        /\\u4f60\\u662f\\u771f\\u7684\\u4eba\\u7c7b\\u5417/,
+                        /\\u5b8c\\u6210\\u9a8c\\u8bc1\\u540e\\u81ea\\u52a8\\u7b7e\\u5230/,
+                        /\\u8ba9\\u6211\\u7528\\u9b54\\u6cd5\\u9a8c\\u8bc1\\u4e00\\u4e0b/,
+                        /\\u8ba9\\u7528\\u9b54\\u6cd5\\u9a8c\\u8bc1\\u4e00\\u4e0b/,
+                    ];
+
+                    const isVisible = (el) => {
+                        if (!el) return false;
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width < 8 || rect.height < 8) return false;
+                        if (rect.bottom <= 0 || rect.right <= 0) return false;
+                        if (rect.top >= window.innerHeight || rect.left >= window.innerWidth) return false;
+                        const style = window.getComputedStyle(el);
+                        if (style.display === "none" || style.visibility === "hidden") return false;
+                        if (Number(style.opacity || "1") <= 0.01) return false;
+                        return true;
+                    };
+
+                    const addPoint = (x, y, label) => {
+                        const xi = Math.round(x);
+                        const yi = Math.round(y);
+                        if (xi < 3 || yi < 3 || xi > window.innerWidth - 3 || yi > window.innerHeight - 3) return;
+                        const key = `${xi}:${yi}`;
+                        if (pointKeys.has(key)) return;
+                        pointKeys.add(key);
+                        points.push({ x: xi, y: yi, label });
+                    };
+
+                    while (roots.length) {
+                        const root = roots.shift();
+                        if (!root || !root.querySelectorAll) continue;
+
+                        const iframes = Array.from(root.querySelectorAll("iframe"));
+                        for (const frame of iframes) {
+                            if (!isVisible(frame)) continue;
+                            const src = (frame.getAttribute("src") || "").toLowerCase();
+                            const title = (frame.getAttribute("title") || "").toLowerCase();
+                            const isCf =
+                                src.includes("challenges.cloudflare.com") ||
+                                src.includes("turnstile") ||
+                                title.includes("cloudflare") ||
+                                title.includes("turnstile");
+                            if (!isCf) continue;
+                            const rect = frame.getBoundingClientRect();
+                            addPoint(rect.left + Math.min(Math.max(rect.width * 0.16, 18), 36), rect.top + rect.height * 0.5, "iframe-left");
+                            addPoint(rect.left + rect.width * 0.5, rect.top + rect.height * 0.5, "iframe-center");
+                        }
+
+                        const checkboxes = Array.from(root.querySelectorAll("[role='checkbox'], input[type='checkbox']"));
+                        for (const box of checkboxes) {
+                            if (!isVisible(box)) continue;
+                            const rect = box.getBoundingClientRect();
+                            addPoint(rect.left + rect.width * 0.5, rect.top + rect.height * 0.5, "checkbox");
+                        }
+
+                        const textNodes = Array.from(root.querySelectorAll("div, span, p, label, button, strong, small, h1, h2, h3"));
+                        for (const el of textNodes) {
+                            if (!isVisible(el)) continue;
+                            const txt = (el.textContent || "").trim().toLowerCase();
+                            if (!txt || !patterns.some((re) => re.test(txt))) continue;
+                            const rect = el.getBoundingClientRect();
+                            addPoint(rect.left + Math.min(Math.max(rect.width * 0.2, 30), 120), rect.top + rect.height * 0.5, "hint-left");
+                            addPoint(rect.left + rect.width * 0.5, rect.top + rect.height * 0.5, "hint-center");
+                        }
+
+                        const dialogs = Array.from(root.querySelectorAll("[role='dialog'], .el-dialog, .ant-modal, .modal, .dialog"));
+                        for (const dialog of dialogs) {
+                            if (!isVisible(dialog)) continue;
+                            const txt = (dialog.textContent || "").trim().toLowerCase();
+                            if (!txt || !patterns.some((re) => re.test(txt))) continue;
+                            const rect = dialog.getBoundingClientRect();
+                            const xs = [0.16, 0.22, 0.28, 0.34];
+                            const ys = [0.50, 0.56, 0.62, 0.68];
+                            for (const rx of xs) {
+                                for (const ry of ys) {
+                                    addPoint(rect.left + rect.width * rx, rect.top + rect.height * ry, "dialog-heuristic");
+                                }
+                            }
+                        }
+
+                        const hosts = root.querySelectorAll("*");
+                        for (const host of hosts) {
+                            const shadow = host.shadowRoot;
+                            if (shadow && !visited.has(shadow)) {
+                                visited.add(shadow);
+                                roots.push(shadow);
+                            }
+                        }
+                    }
+
+                    return points.slice(0, 80);
+                }"""
+            )
+            if isinstance(points, list):
+                return points
+        except Exception:
+            pass
+        return []
+
     async def _click_turnstile_verify_fallback(self, page) -> bool:
         # Some pages render Turnstile without a discoverable iframe.
-        selectors = [
+        # Try direct selectors first.
+        direct_selectors = [
+            "[role='checkbox']",
+            "input[type='checkbox']",
+            "iframe[src*='challenges.cloudflare.com']",
+            "iframe[src*='turnstile']",
+            "iframe[title*='Cloudflare']",
+            "iframe[title*='turnstile']",
             "label:has-text('Verify you are human')",
             "div:has-text('Verify you are human')",
             "span:has-text('Verify you are human')",
             "text=Verify you are human",
             "text=verify you are human",
+            "text=完成验证后自动签到",
+            "text=你是真的人类吗",
+            "text=让我用魔法验证一下",
         ]
 
-        for selector in selectors:
+        for selector in direct_selectors:
             try:
                 locator = page.locator(selector).first
                 if await locator.count() == 0:
                     continue
-                if not await locator.is_visible(timeout=400):
+                if not await locator.is_visible(timeout=350):
                     continue
-                box = await locator.bounding_box()
-                if not box:
-                    continue
-
-                center_y = box["y"] + (box["height"] / 2)
-                left_x = max(2, box["x"] - 24)
-                near_x = box["x"] + min(16, max(2, box["width"] / 6))
-
-                await page.mouse.click(left_x, center_y)
-                await page.wait_for_timeout(700)
-                await page.mouse.click(near_x, center_y)
-                await page.wait_for_timeout(900)
+                await locator.click(timeout=1200)
+                await page.wait_for_timeout(800)
                 return True
             except Exception:
                 continue
 
-        try:
-            role_checkbox = page.locator("[role='checkbox']").first
-            if await role_checkbox.count() > 0 and await role_checkbox.is_visible(timeout=400):
-                await role_checkbox.click(timeout=1500)
-                await page.wait_for_timeout(900)
-                return True
-        except Exception:
-            pass
+        points = await self._collect_turnstile_click_points(page)
+        if not points:
+            self._debug_log("turnstile fallback: no candidate click points")
+            return False
+
+        self._debug_log(f"turnstile fallback points={len(points)}")
+        for idx, point in enumerate(points[:30]):
+            try:
+                x = float(point.get("x", 0))
+                y = float(point.get("y", 0))
+                if x < 3 or y < 3:
+                    continue
+
+                for dx, dy in ((0, 0), (-4, -2), (3, 2)):
+                    tx = max(3, x + dx)
+                    ty = max(3, y + dy)
+                    await page.mouse.move(tx, ty, steps=8)
+                    await page.wait_for_timeout(120)
+                    await page.mouse.click(tx, ty, delay=90)
+                    await page.wait_for_timeout(700)
+                    if not await self._is_turnstile_modal_visible(page):
+                        self._debug_log(
+                            f"turnstile fallback solved at point#{idx + 1} ({point.get('label', 'unknown')})"
+                        )
+                        return True
+                    try:
+                        await page.keyboard.press("Space")
+                    except Exception:
+                        pass
+                    await page.wait_for_timeout(280)
+                    if not await self._is_turnstile_modal_visible(page):
+                        self._debug_log(
+                            f"turnstile fallback solved by keyboard at point#{idx + 1} ({point.get('label', 'unknown')})"
+                        )
+                        return True
+            except Exception:
+                continue
 
         return False
 
@@ -351,29 +576,38 @@ class HybgzsCheckIn:
         if not (await self._is_turnstile_modal_visible(page) or await self._has_turnstile_markers(page)):
             return True
 
-        try:
-            has_cf_iframe = await page.locator("iframe[src*='challenges.cloudflare.com']").count()
-            if has_cf_iframe > 0 and await self._prepare_click_solver(page):
-                await self._click_solver.solve_captcha(
-                    captcha_container=page,
-                    captcha_type=CaptchaType.CLOUDFLARE_TURNSTILE,
-                )
-                await page.wait_for_timeout(2200)
-                if not await self._is_turnstile_modal_visible(page):
-                    return True
-        except Exception:
-            pass
-
-        for _ in range(3):
-            clicked = await self._click_turnstile_verify_fallback(page)
-            await page.wait_for_timeout(900)
+        self._debug_log("turnstile detected, starting solve loop")
+        for attempt in range(1, 8):
             if not await self._is_turnstile_modal_visible(page):
+                self._debug_log("turnstile modal no longer visible")
                 return True
-            if not clicked:
-                break
+
+            try:
+                deep_iframe_count = await self._count_turnstile_iframes_deep(page)
+                self._debug_log(f"turnstile attempt={attempt}, deep_iframes={deep_iframe_count}")
+                if deep_iframe_count > 0 and await self._prepare_click_solver(page):
+                    await self._click_solver.solve_captcha(
+                        captcha_container=page,
+                        captcha_type=CaptchaType.CLOUDFLARE_TURNSTILE,
+                    )
+                    await page.wait_for_timeout(2000)
+                    if not await self._is_turnstile_modal_visible(page):
+                        self._debug_log(f"turnstile solved by click_solver on attempt={attempt}")
+                        return True
+            except Exception:
+                self._debug_log(f"turnstile solver attempt={attempt} raised exception")
+
+            clicked = await self._click_turnstile_verify_fallback(page)
+            if clicked:
+                self._debug_log(f"turnstile fallback click triggered on attempt={attempt}")
+            else:
+                self._debug_log(f"turnstile fallback had no effective click on attempt={attempt}")
+            await page.wait_for_timeout(900 if clicked else 1200)
 
         await page.wait_for_timeout(1000)
-        return not await self._is_turnstile_modal_visible(page)
+        solved = not await self._is_turnstile_modal_visible(page)
+        self._debug_log(f"turnstile solve loop finished, solved={solved}")
+        return solved
 
     async def _login_via_linuxdo(self, page) -> tuple[bool, str]:
         if not self.credential:
