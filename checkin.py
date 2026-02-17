@@ -9,6 +9,7 @@ import inspect
 import hashlib
 import os
 import tempfile
+from datetime import datetime
 from urllib.parse import urlparse, urlencode
 
 from curl_cffi import requests as curl_requests
@@ -945,6 +946,188 @@ class CheckIn:
 
         return results
 
+    def _get_provider_cookie_cache_file_path(self, username: str) -> str:
+        """获取 provider 账号密码登录的 cookie 缓存文件路径。"""
+        identity = f'{self.provider_config.origin}|{username}'
+        identity_hash = hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16]
+        return f'{self.storage_state_dir}/provider_{identity_hash}_cookie_cache.json'
+
+    def _load_provider_cookie_cache(self, cache_file_path: str) -> dict | None:
+        """读取 provider 账号密码登录缓存。"""
+        try:
+            if not os.path.exists(cache_file_path):
+                return None
+            with open(cache_file_path, encoding='utf-8') as f:
+                cache_data = json.load(f)
+
+            cookies = parse_cookies(cache_data.get('cookies', {}))
+            api_user = cache_data.get('api_user')
+            if not cookies or not api_user:
+                print(f'⚠️ {self.account_name}: Provider cookie cache exists but is incomplete, ignoring')
+                return None
+            return {
+                'cookies': cookies,
+                'api_user': api_user,
+                'updated_at': cache_data.get('updated_at', ''),
+            }
+        except Exception as e:
+            print(f'⚠️ {self.account_name}: Failed to read provider cookie cache: {e}')
+            return None
+
+    def _save_provider_cookie_cache(self, cache_file_path: str, cookies: dict, api_user: str | int) -> None:
+        """保存 provider 账号密码登录缓存。"""
+        try:
+            cache_data = {
+                'provider': self.provider_config.name,
+                'origin': self.provider_config.origin,
+                'api_user': str(api_user),
+                'cookies': cookies,
+                'updated_at': datetime.now().isoformat(),
+            }
+            with open(cache_file_path, 'w', encoding='utf-8') as f:
+                json.dump(cache_data, f, ensure_ascii=False)
+            print(f'✅ {self.account_name}: Provider cookie cache updated: {cache_file_path}')
+        except Exception as e:
+            print(f'⚠️ {self.account_name}: Failed to save provider cookie cache: {e}')
+
+    def _extract_provider_cookies(self, session: curl_requests.Session) -> dict:
+        """从 session 中提取当前 provider 域名相关 cookies。"""
+        provider_domain = urlparse(self.provider_config.origin).netloc.lstrip('.').lower()
+        cookies = {}
+
+        for cookie in session.cookies.jar:
+            name = getattr(cookie, 'name', None)
+            value = getattr(cookie, 'value', None)
+            domain = (getattr(cookie, 'domain', '') or '').lstrip('.').lower()
+
+            if not name or value is None:
+                continue
+
+            # 匹配 provider domain 及其子域。
+            if (
+                not domain
+                or domain == provider_domain
+                or domain.endswith('.' + provider_domain)
+                or provider_domain.endswith('.' + domain)
+            ):
+                cookies[name] = value
+
+        return cookies
+
+    async def sign_in_with_password(
+        self,
+        username: str,
+        password: str,
+        bypass_cookies: dict,
+        common_headers: dict,
+    ) -> tuple[bool, dict]:
+        """使用用户名/邮箱 + 密码走标准 New API 登录链路，再复用 cookies 完成签到。"""
+        print(
+            f"ℹ️ {self.account_name}: Executing check-in with password account "
+            f"({mask_username(username)}) (using proxy: {'true' if self.http_proxy_config else 'false'})"
+        )
+
+        user_agent = common_headers.get('User-Agent', '')
+        impersonate = get_curl_cffi_impersonate(user_agent)
+        if impersonate:
+            print(f'ℹ️ {self.account_name}: Using curl_cffi Session with impersonate={impersonate}')
+
+        cache_file_path = self._get_provider_cookie_cache_file_path(username)
+        cached_auth = self._load_provider_cookie_cache(cache_file_path)
+        if cached_auth:
+            print(
+                f"ℹ️ {self.account_name}: Trying password-login cookie cache "
+                f"(updated_at={cached_auth.get('updated_at') or 'unknown'})"
+            )
+            cached_cookies = cached_auth.get('cookies', {})
+            cached_api_user = cached_auth.get('api_user')
+            merged_cookies = {**bypass_cookies, **cached_cookies}
+            success, user_info = await self.check_in_with_cookies(
+                merged_cookies,
+                common_headers,
+                cached_api_user,
+                impersonate,
+            )
+            if success:
+                print(f'✅ {self.account_name}: Password-login cookie cache is valid')
+                return True, user_info
+            print(f'⚠️ {self.account_name}: Password-login cookie cache is invalid, fallback to password login')
+
+        session = curl_requests.Session(impersonate=impersonate, proxy=self.http_proxy_config, timeout=30)
+        try:
+            session.cookies.update(bypass_cookies)
+
+            headers = common_headers.copy()
+            headers[self.provider_config.api_user_key] = '-1'
+            headers['Referer'] = self.provider_config.get_login_url()
+            headers['Origin'] = self.provider_config.origin
+            headers['Content-Type'] = 'application/json'
+
+            login_payload = {'username': username, 'password': password}
+            login_url = f'{self.provider_config.origin}/api/user/login'
+
+            # 尝试读取 status，兼容 turnstile 参数。
+            turnstile_token = ''
+            try:
+                status_resp = session.get(self.provider_config.get_status_url(), headers=headers, timeout=30)
+                status_json = response_resolve(status_resp, 'provider_password_status', self.account_name)
+                if status_json and status_json.get('success'):
+                    status_data = status_json.get('data', {})
+                    if status_data.get('turnstile_check'):
+                        turnstile_token = status_data.get('turnstile_token') or ''
+            except Exception as status_err:
+                print(f'⚠️ {self.account_name}: Failed to read status before password login: {status_err}')
+
+            if turnstile_token:
+                login_url = f'{login_url}?turnstile={turnstile_token}'
+            else:
+                login_url = f'{login_url}?turnstile='
+
+            response = session.post(login_url, json=login_payload, headers=headers, timeout=30)
+            login_json = response_resolve(response, 'password_login', self.account_name)
+            if login_json is None:
+                return False, {
+                    'error': 'Password login got non-JSON response (possibly WAF challenge)',
+                }
+
+            if not login_json.get('success'):
+                error_msg = login_json.get('message', 'Password login failed')
+                return False, {'error': error_msg}
+
+            login_data = login_json.get('data') or {}
+            api_user = login_data.get('id')
+
+            # 某些站点登录返回可能不带完整 data，尝试通过 /api/user/self 补全 id。
+            if not api_user:
+                user_info_resp = session.get(self.provider_config.get_user_info_url(), headers=headers, timeout=30)
+                user_info_json = response_resolve(user_info_resp, 'password_user_info', self.account_name)
+                if user_info_json and user_info_json.get('success'):
+                    api_user = (user_info_json.get('data') or {}).get('id')
+
+            if not api_user:
+                return False, {'error': 'Password login succeeded but api_user was not found'}
+
+            user_cookies = self._extract_provider_cookies(session)
+            if not user_cookies:
+                return False, {'error': 'Password login succeeded but cookies are empty'}
+
+            merged_cookies = {**bypass_cookies, **user_cookies}
+            success, user_info = await self.check_in_with_cookies(
+                merged_cookies,
+                common_headers,
+                api_user,
+                impersonate,
+            )
+            if success:
+                self._save_provider_cookie_cache(cache_file_path, user_cookies, api_user)
+            return success, user_info
+
+        except Exception as e:
+            print(f'❌ {self.account_name}: Error occurred during password login process - {e}')
+            return False, {'error': 'Password login process error'}
+        finally:
+            session.close()
+
     async def check_in_with_cookies(
         self,
         cookies: dict,
@@ -1459,6 +1642,7 @@ class CheckIn:
 
         # 解析账号配置
         cookies_data = self.account_config.cookies
+        provider_account = self.account_config.provider_account
         github_accounts = self.account_config.github  # 现在是 List[OAuthAccountConfig] 类型
         linuxdo_accounts = self.account_config.linux_do  # 现在是 List[OAuthAccountConfig] 类型
         results = []
@@ -1489,6 +1673,44 @@ class CheckIn:
             except Exception as e:
                 print(f"❌ {self.account_name}: Cookies authentication error: {e}")
                 results.append(("cookies", False, {"error": str(e)}))
+
+        # 尝试密码认证（用户名/邮箱 + 密码）
+        if provider_account:
+            print(
+                f"\nℹ️ {self.account_name}: Trying password authentication "
+                f"({mask_username(provider_account.username)})"
+            )
+            try:
+                username = provider_account.username
+                password = provider_account.password
+                if not username or not password:
+                    print(f"❌ {self.account_name}: Incomplete password account information")
+                    results.append(("password", False, {"error": "Incomplete password account information"}))
+                else:
+                    success, user_info = await self.sign_in_with_password(
+                        username,
+                        password,
+                        bypass_cookies,
+                        common_headers,
+                    )
+                    if success:
+                        print(
+                            f"✅ {self.account_name}: Password authentication successful "
+                            f"({mask_username(provider_account.username)})"
+                        )
+                        results.append(("password", True, user_info))
+                    else:
+                        print(
+                            f"❌ {self.account_name}: Password authentication failed "
+                            f"({mask_username(provider_account.username)})"
+                        )
+                        results.append(("password", False, user_info))
+            except Exception as e:
+                print(
+                    f"❌ {self.account_name}: Password authentication error "
+                    f"({mask_username(provider_account.username)}): {e}"
+                )
+                results.append(("password", False, {"error": str(e)}))
 
         # 尝试 GitHub 认证（支持多个账号）
         if github_accounts:

@@ -220,6 +220,7 @@ class AccountConfig:
     name: str | None = None
     linux_do: List["OAuthAccountConfig"] | None = None  # 改为列表类型
     github: List["OAuthAccountConfig"] | None = None  # 改为列表类型
+    provider_account: OAuthAccountConfig | None = None  # 站点本地账号（username/password）
     proxy: dict | None = None
     extra: dict = field(default_factory=dict)  # 存储额外的配置字段
 
@@ -229,6 +230,7 @@ class AccountConfig:
         data: dict,
         linux_do_accounts: List["OAuthAccountConfig"] | None = None,
         github_accounts: List["OAuthAccountConfig"] | None = None,
+        provider_account: OAuthAccountConfig | None = None,
     ) -> "AccountConfig":
         """从字典创建 AccountConfig
 
@@ -245,7 +247,7 @@ class AccountConfig:
         proxy = data.get("proxy")
 
         # 提取已知字段
-        known_keys = {"provider", "name", "cookies", "api_user", "linux.do", "github", "proxy"}
+        known_keys = {"provider", "name", "cookies", "api_user", "linux.do", "github", "proxy", "username", "password"}
         # 收集额外的配置字段
         extra = {k: v for k, v in data.items() if k not in known_keys}
 
@@ -256,6 +258,7 @@ class AccountConfig:
             api_user=data.get("api_user", ""),
             linux_do=linux_do_accounts,
             github=github_accounts,
+            provider_account=provider_account,
             proxy=proxy,
             extra=extra,
         )
@@ -1208,6 +1211,7 @@ class AppConfig:
                 has_linux_do = "linux.do" in account
                 has_github = "github" in account
                 has_cookies = "cookies" in account
+                has_provider_account = "username" in account or "password" in account
 
                 # 解析 linux.do 配置（支持 bool、单个账号、多个账号）
                 linux_do_accounts = None
@@ -1235,6 +1239,24 @@ class AppConfig:
                         print(f"⚠️ {account_name} github configuration is invalid, skipping")
                         continue
 
+                # 解析 provider 本地账号配置（username/password）
+                provider_account = None
+                if has_provider_account:
+                    username = account.get("username")
+                    password = account.get("password")
+                    if username is None or password is None:
+                        print(f"⚠️ {account_name} username/password must be configured together, skipping")
+                        continue
+                    if not username or not password:
+                        print(f"⚠️ {account_name} username/password cannot be empty, skipping")
+                        continue
+                    provider_account = OAuthAccountConfig.from_dict(
+                        {
+                            "username": username,
+                            "password": password,
+                        }
+                    )
+
                 # 验证 cookies 配置
                 valid_cookies = False
                 if has_cookies:
@@ -1252,15 +1274,17 @@ class AppConfig:
                 has_valid_linux_do = linux_do_accounts is not None and len(linux_do_accounts) > 0
                 has_valid_github = github_accounts is not None and len(github_accounts) > 0
                 has_valid_cookies = valid_cookies
+                has_valid_provider_account = provider_account is not None
 
-                if not has_valid_linux_do and not has_valid_github and not has_valid_cookies:
+                if not has_valid_linux_do and not has_valid_github and not has_valid_cookies and not has_valid_provider_account:
                     print(
-                        f"⚠️ {account_name} must have at least one valid authentication method (linux.do, github, or cookies), skipping"
+                        f"⚠️ {account_name} must have at least one valid authentication method "
+                        f"(username/password, linux.do, github, or cookies), skipping"
                     )
                     continue
 
                 # 创建 AccountConfig，传入解析后的 OAuth 账号列表
-                account_config = AccountConfig.from_dict(account, linux_do_accounts, github_accounts)
+                account_config = AccountConfig.from_dict(account, linux_do_accounts, github_accounts, provider_account)
                 accounts.append(account_config)
 
             return accounts
