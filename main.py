@@ -6,6 +6,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import sys
 from datetime import datetime
 from dotenv import load_dotenv
@@ -35,6 +36,20 @@ def generate_balance_hash(balances: dict) -> str:
     return hashlib.sha256(balance_json.encode("utf-8")).hexdigest()[:16]
 
 
+def _normalize_notify_format(value: str | None, default: str = "both") -> str:
+    """Normalize notify format to one of: detail, summary, both."""
+    if not value:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in {"detail", "detailed"}:
+        return "detail"
+    if normalized in {"summary", "brief"}:
+        return "summary"
+    if normalized in {"both", "all", "full"}:
+        return "both"
+    return default
+
+
 async def main():
     """运行签到流程
 
@@ -54,6 +69,8 @@ async def main():
         return 1
     
     print(f"⚙️ Found {len(app_config.accounts)} account(s)")
+    notify_format = _normalize_notify_format(os.getenv("CHECKIN_NOTIFY_FORMAT"), default="both")
+    print(f"⚙️ notify_format={notify_format}")
 
     # 加载余额hash
     last_balance_hash = load_balance_hash(BALANCE_HASH_FILE)
@@ -192,7 +209,7 @@ async def main():
             "accounts_success": f"{account_success_count}/{len(app_config.accounts)}",
             "auth_methods_success": f"{success_count}/{total_count}",
         }
-        notify_content = build_summary_message(
+        summary_content = build_summary_message(
             workflow="main/checkin",
             success_count=account_success_count,
             total_count=len(app_config.accounts),
@@ -203,6 +220,25 @@ async def main():
             highlight_items=highlight_accounts,
         )
         notify_title = "Check-in Alert" if (has_account_failure or has_partial_failure) else "Check-in Summary"
+
+        detail_lines: list[str] = [
+            f"time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"accounts_success: {account_success_count}/{len(app_config.accounts)}",
+            f"auth_methods_success: {success_count}/{total_count}",
+        ]
+        if failed_accounts:
+            detail_lines.append("failed_accounts: " + "; ".join(failed_accounts))
+        if partial_accounts:
+            detail_lines.append("partial_accounts: " + "; ".join(partial_accounts))
+        if highlight_accounts:
+            detail_lines.append("highlights: " + "; ".join(highlight_accounts))
+
+        sections: list[str] = []
+        if notify_format in {"detail", "both"}:
+            sections.append("\n".join(detail_lines))
+        if notify_format in {"summary", "both"}:
+            sections.append(summary_content)
+        notify_content = "\n\n".join(sections) if sections else summary_content
 
         print(notify_content)
         notify.push_message(notify_title, notify_content, msg_type="text")

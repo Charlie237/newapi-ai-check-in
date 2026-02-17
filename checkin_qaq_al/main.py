@@ -37,6 +37,7 @@ class AccountConfig:
     name: str
     sid: str
     credential: LinuxDoCredential | None
+    tier: int = 4
 
 
 def _strip_code_fence(text: str) -> str:
@@ -71,6 +72,28 @@ def _to_bool(value, default: bool = False) -> bool:
             return True
         if v in {"0", "false", "no", "off"}:
             return False
+    return default
+
+
+def _to_positive_int(value, default: int) -> int:
+    try:
+        parsed = int(str(value).strip())
+        return parsed if parsed > 0 else default
+    except Exception:
+        return default
+
+
+def _normalize_notify_format(value: str | None, default: str = "both") -> str:
+    """Normalize notify format to one of: detail, summary, both."""
+    if not value:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in {"detail", "detailed"}:
+        return "detail"
+    if normalized in {"summary", "brief"}:
+        return "summary"
+    if normalized in {"both", "all", "full"}:
+        return "both"
     return default
 
 
@@ -166,11 +189,13 @@ def load_accounts() -> list[AccountConfig] | None:
         name = f"account_{idx + 1}"
         sid = ""
         credential: LinuxDoCredential | None = None
+        tier = 4
 
         if isinstance(item, str):
             sid = item.strip().strip('"').strip("'")
         elif isinstance(item, dict):
             name = str(item.get("name") or name)
+            tier = _to_positive_int(item.get("tier", 4), default=4)
             raw_sid = item.get("sid")
             if raw_sid is None:
                 raw_sid = item.get("session")
@@ -191,7 +216,7 @@ def load_accounts() -> list[AccountConfig] | None:
             print(f"⚠️ Skip {name}: missing sid and linuxdo credential")
             continue
 
-        accounts.append(AccountConfig(name=name, sid=sid, credential=credential))
+        accounts.append(AccountConfig(name=name, sid=sid, credential=credential, tier=tier))
 
     if not accounts:
         print("❌ No valid qaq.al account configuration")
@@ -239,25 +264,22 @@ async def main():
             global_proxy = {"server": proxy_str}
             print(f"⚙️ proxy loaded as url: {proxy_str}")
 
-    tier = int(os.getenv("QAQ_AL_TIER", "4"))
     debug = _to_bool(os.getenv("DEBUG", "false"), default=False)
-    print(f"⚙️ tier={tier}, debug={debug}")
+    notify_format = _normalize_notify_format(os.getenv("QAQ_AL_NOTIFY_FORMAT"), default="both")
+    print(f"⚙️ debug={debug}, notify_format={notify_format}")
 
     success_count = 0
     total_count = len(accounts)
-    notification_content: list[str] = []
+    detail_lines: list[str] = []
     current_info: dict = {}
 
     for account in accounts:
-        if notification_content:
-            notification_content.append("\n-------------------------------")
-
         try:
-            print(f"📑 processing {account.name}")
+            print(f"📑 processing {account.name} (tier={account.tier})")
             checkin = CheckIn(account.name, global_proxy=global_proxy, debug=debug)
             success, result = await checkin.execute(
                 sid=account.sid or None,
-                tier=tier,
+                tier=account.tier,
                 credential=account.credential,
             )
 
@@ -266,22 +288,22 @@ async def main():
                 current_info[account.name] = result
                 source = result.get("auth_source", "unknown")
                 if result.get("already_signed"):
-                    notification_content.append(
+                    detail_lines.append(
                         f"  🔵 {account.name}: already signed [{source}] | reward {result.get('reward_final', '?')} ({result.get('tier_name', '')})"
                     )
                 else:
-                    notification_content.append(
+                    detail_lines.append(
                         f"  🔵 {account.name}: reward {result.get('reward_final', '?')} ({result.get('tier_name', '')}) | PoW {result.get('pow_elapsed', '?')}s @ {result.get('pow_hps', 0):,} H/s [{source}]"
                     )
                 if result.get("sid_refreshed"):
-                    notification_content.append(f"    ↳ sid refreshed via linuxdo ({result.get('login_message', '')})")
+                    detail_lines.append(f"    ↳ sid refreshed via linuxdo ({result.get('login_message', '')})")
             else:
                 error_msg = result.get("error", "unknown error") if result else "unknown error"
-                notification_content.append(f"  ❌ {account.name}: {error_msg}")
+                detail_lines.append(f"  ❌ {account.name}: {error_msg}")
 
         except Exception as exc:
             print(f"❌ {account.name} exception: {exc}")
-            notification_content.append(f"  ❌ {account.name} exception: {str(exc)[:120]}")
+            detail_lines.append(f"  ❌ {account.name} exception: {str(exc)[:120]}")
 
     current_hash = generate_checkin_hash(current_info)
     print(f"\nℹ️ current hash: {current_hash}, last hash: {last_hash}")
@@ -296,24 +318,27 @@ async def main():
     else:
         print("ℹ️ hash unchanged, skip notification")
 
-    if need_notify and notification_content:
-        summary = [
+    if need_notify:
+        summary_lines = [
             "-------------------------------",
             "📙 qaq.al summary:",
             f"🟢 success: {success_count}/{total_count}",
             f"🔴 failed: {total_count - success_count}/{total_count}",
         ]
         if success_count == total_count:
-            summary.append("✅ all accounts succeeded")
+            summary_lines.append("✅ all accounts succeeded")
         elif success_count > 0:
-            summary.append("⚠️ partial success")
+            summary_lines.append("⚠️ partial success")
         else:
-            summary.append("❌ all accounts failed")
+            summary_lines.append("❌ all accounts failed")
 
         time_info = f"🕘 run at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        notify_content = "\n\n".join(
-            [time_info, "📋 details:\n" + "\n".join(notification_content), "\n".join(summary)]
-        )
+        sections: list[str] = [time_info]
+        if notify_format in {"detail", "both"}:
+            sections.append("📋 details:\n" + ("\n".join(detail_lines) if detail_lines else "-"))
+        if notify_format in {"summary", "both"}:
+            sections.append("\n".join(summary_lines))
+        notify_content = "\n\n".join(sections)
 
         print(notify_content)
         if success_count == total_count:

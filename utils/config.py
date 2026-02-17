@@ -211,16 +211,37 @@ class OAuthAccountConfig:
 
 
 @dataclass
+class CookieAccountConfig:
+    """Cookie 账号配置（用于主流程 cookies 登录）"""
+
+    cookies: dict | str
+    api_user: str
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CookieAccountConfig":
+        """从字典创建 CookieAccountConfig
+
+        支持两种格式：
+        - 显式格式: {"cookies": {...}, "api_user": "..."}
+        - 简写格式: {"session": "...", "api_user": "..."}
+        """
+        api_user = data.get("api_user", "")
+        cookies_data = data.get("cookies")
+        if cookies_data is None:
+            cookies_data = {k: v for k, v in data.items() if k != "api_user"}
+        return cls(cookies=cookies_data, api_user=str(api_user))
+
+
+@dataclass
 class AccountConfig:
     """账号配置"""
 
     provider: str = "anyrouter"
-    cookies: dict | str = ""
-    api_user: str = ""
+    cookies: List["CookieAccountConfig"] | None = None
     name: str | None = None
     linux_do: List["OAuthAccountConfig"] | None = None  # 改为列表类型
     github: List["OAuthAccountConfig"] | None = None  # 改为列表类型
-    provider_account: OAuthAccountConfig | None = None  # 站点本地账号（username/password）
+    users: List["OAuthAccountConfig"] | None = None  # 站点本地账号（username/password）
     proxy: dict | None = None
     extra: dict = field(default_factory=dict)  # 存储额外的配置字段
 
@@ -230,7 +251,8 @@ class AccountConfig:
         data: dict,
         linux_do_accounts: List["OAuthAccountConfig"] | None = None,
         github_accounts: List["OAuthAccountConfig"] | None = None,
-        provider_account: OAuthAccountConfig | None = None,
+        users: List["OAuthAccountConfig"] | None = None,
+        cookie_accounts: List["CookieAccountConfig"] | None = None,
     ) -> "AccountConfig":
         """从字典创建 AccountConfig
 
@@ -243,22 +265,20 @@ class AccountConfig:
         name = data.get("name")
 
         # Handle different authentication types
-        cookies = data.get("cookies", "")
         proxy = data.get("proxy")
 
         # 提取已知字段
-        known_keys = {"provider", "name", "cookies", "api_user", "linux.do", "github", "proxy", "username", "password"}
+        known_keys = {"provider", "name", "cookies", "api_user", "linux.do", "github", "user", "proxy"}
         # 收集额外的配置字段
         extra = {k: v for k, v in data.items() if k not in known_keys}
 
         return cls(
             provider=provider,
             name=name if name else None,
-            cookies=cookies,
-            api_user=data.get("api_user", ""),
+            cookies=cookie_accounts,
             linux_do=linux_do_accounts,
             github=github_accounts,
-            provider_account=provider_account,
+            users=users,
             proxy=proxy,
             extra=extra,
         )
@@ -1211,7 +1231,20 @@ class AppConfig:
                 has_linux_do = "linux.do" in account
                 has_github = "github" in account
                 has_cookies = "cookies" in account
-                has_provider_account = "username" in account or "password" in account
+                has_user = "user" in account
+                has_legacy_username_password = "username" in account or "password" in account
+                has_legacy_root_api_user = "api_user" in account
+
+                if has_legacy_username_password:
+                    print(
+                        f"⚠️ {account_name} root username/password is no longer supported, "
+                        f"use user array instead"
+                    )
+                if has_legacy_root_api_user:
+                    print(
+                        f"⚠️ {account_name} root api_user is no longer supported, "
+                        f"use cookies[i].api_user instead"
+                    )
 
                 # 解析 linux.do 配置（支持 bool、单个账号、多个账号）
                 linux_do_accounts = None
@@ -1239,52 +1272,108 @@ class AppConfig:
                         print(f"⚠️ {account_name} github configuration is invalid, skipping")
                         continue
 
-                # 解析 provider 本地账号配置（username/password）
-                provider_account = None
-                if has_provider_account:
-                    username = account.get("username")
-                    password = account.get("password")
-                    if username is None or password is None:
-                        print(f"⚠️ {account_name} username/password must be configured together, skipping")
+                # 解析站点本地账号配置（user 数组）
+                users = None
+                if has_user:
+                    user_config = account.get("user")
+                    if not isinstance(user_config, list):
+                        print(f"⚠️ {account_name} user must be an array, skipping")
                         continue
-                    if not username or not password:
-                        print(f"⚠️ {account_name} username/password cannot be empty, skipping")
-                        continue
-                    provider_account = OAuthAccountConfig.from_dict(
-                        {
-                            "username": username,
-                            "password": password,
-                        }
-                    )
 
-                # 验证 cookies 配置
-                valid_cookies = False
+                    users = []
+                    for j, user_item in enumerate(user_config):
+                        if not isinstance(user_item, dict):
+                            print(f"⚠️ {account_name} user[{j}] must be an object, skipping")
+                            users = None
+                            break
+
+                        username = user_item.get("username")
+                        password = user_item.get("password")
+                        if username is None or password is None:
+                            print(f"⚠️ {account_name} user[{j}] must contain username and password, skipping")
+                            users = None
+                            break
+                        if not username or not password:
+                            print(f"⚠️ {account_name} user[{j}] username and password cannot be empty, skipping")
+                            users = None
+                            break
+
+                        users.append(
+                            OAuthAccountConfig.from_dict(
+                                {
+                                    "username": username,
+                                    "password": password,
+                                }
+                            )
+                        )
+
+                    if users is None:
+                        continue
+
+                # 解析 cookies 配置（cookies 数组）
+                cookie_accounts = None
                 if has_cookies:
                     cookies_config = account.get("cookies")
-                    api_user = account.get("api_user")
+                    if not isinstance(cookies_config, list):
+                        print(f"⚠️ {account_name} cookies must be an array, skipping")
+                        continue
 
-                    if cookies_config and api_user:
-                        valid_cookies = True
-                    elif cookies_config and not api_user:
-                        print(f"⚠️ {account_name} with cookies must have api_user field")
-                    elif not cookies_config:
-                        print(f"⚠️ {account_name} cookies is empty")
+                    cookie_accounts = []
+                    for j, cookie_item in enumerate(cookies_config):
+                        if not isinstance(cookie_item, dict):
+                            print(f"⚠️ {account_name} cookies[{j}] must be an object, skipping")
+                            cookie_accounts = None
+                            break
+
+                        api_user = cookie_item.get("api_user")
+                        if api_user is None or api_user == "":
+                            print(f"⚠️ {account_name} cookies[{j}] must contain api_user, skipping")
+                            cookie_accounts = None
+                            break
+
+                        cookie_data = cookie_item.get("cookies")
+                        if cookie_data is None:
+                            cookie_data = {k: v for k, v in cookie_item.items() if k != "api_user"}
+
+                        if not cookie_data:
+                            print(f"⚠️ {account_name} cookies[{j}] has empty cookies payload, skipping")
+                            cookie_accounts = None
+                            break
+
+                        if not isinstance(cookie_data, (dict, str)):
+                            print(f"⚠️ {account_name} cookies[{j}] cookies must be dict or string, skipping")
+                            cookie_accounts = None
+                            break
+
+                        cookie_accounts.append(
+                            CookieAccountConfig.from_dict(
+                                {
+                                    "cookies": cookie_data,
+                                    "api_user": str(api_user),
+                                }
+                            )
+                        )
+
+                    if cookie_accounts is None:
+                        continue
 
                 # 检查解析后是否至少有一个有效的认证方式
                 has_valid_linux_do = linux_do_accounts is not None and len(linux_do_accounts) > 0
                 has_valid_github = github_accounts is not None and len(github_accounts) > 0
-                has_valid_cookies = valid_cookies
-                has_valid_provider_account = provider_account is not None
+                has_valid_cookies = cookie_accounts is not None and len(cookie_accounts) > 0
+                has_valid_users = users is not None and len(users) > 0
 
-                if not has_valid_linux_do and not has_valid_github and not has_valid_cookies and not has_valid_provider_account:
+                if not has_valid_linux_do and not has_valid_github and not has_valid_cookies and not has_valid_users:
                     print(
                         f"⚠️ {account_name} must have at least one valid authentication method "
-                        f"(username/password, linux.do, github, or cookies), skipping"
+                        f"(user, linux.do, github, or cookies), skipping"
                     )
                     continue
 
                 # 创建 AccountConfig，传入解析后的 OAuth 账号列表
-                account_config = AccountConfig.from_dict(account, linux_do_accounts, github_accounts, provider_account)
+                account_config = AccountConfig.from_dict(
+                    account, linux_do_accounts, github_accounts, users, cookie_accounts
+                )
                 accounts.append(account_config)
 
             return accounts
