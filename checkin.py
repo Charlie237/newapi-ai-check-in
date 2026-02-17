@@ -1641,76 +1641,78 @@ class CheckIn:
             print(f"ℹ️ {self.account_name}: Using random User-Agent (generated once)")
 
         # 解析账号配置
-        cookies_data = self.account_config.cookies
-        provider_account = self.account_config.provider_account
+        cookie_accounts = self.account_config.cookies
+        users = self.account_config.users
         github_accounts = self.account_config.github  # 现在是 List[OAuthAccountConfig] 类型
         linuxdo_accounts = self.account_config.linux_do  # 现在是 List[OAuthAccountConfig] 类型
         results = []
 
         # 尝试 cookies 认证
-        if cookies_data:
-            print(f"\nℹ️ {self.account_name}: Trying cookies authentication")
-            try:
-                user_cookies = parse_cookies(cookies_data)
-                if not user_cookies:
-                    print(f"❌ {self.account_name}: Invalid cookies format")
-                    results.append(("cookies", False, {"error": "Invalid cookies format"}))
-                else:
-                    api_user = self.account_config.api_user
+        if cookie_accounts:
+            for idx, cookie_account in enumerate(cookie_accounts):
+                account_label = f"cookies[{idx}]" if len(cookie_accounts) > 1 else "cookies"
+                print(f"\nℹ️ {self.account_name}: Trying cookies authentication ({account_label})")
+                try:
+                    user_cookies = parse_cookies(cookie_account.cookies)
+                    if not user_cookies:
+                        print(f"❌ {self.account_name}: Invalid cookies format")
+                        results.append((account_label, False, {"error": "Invalid cookies format"}))
+                        continue
+
+                    api_user = cookie_account.api_user
                     if not api_user:
                         print(f"❌ {self.account_name}: API user identifier not found for cookies")
-                        results.append(("cookies", False, {"error": "API user identifier not found"}))
-                    else:
-                        # 使用已有 cookies 执行签到，传入公用请求头
-                        all_cookies = {**bypass_cookies, **user_cookies}
-                        success, user_info = await self.check_in_with_cookies(all_cookies, common_headers, api_user)
-                        if success:
-                            print(f"✅ {self.account_name}: Cookies authentication successful")
-                            results.append(("cookies", True, user_info))
-                        else:
-                            print(f"❌ {self.account_name}: Cookies authentication failed")
-                            results.append(("cookies", False, user_info))
-            except Exception as e:
-                print(f"❌ {self.account_name}: Cookies authentication error: {e}")
-                results.append(("cookies", False, {"error": str(e)}))
+                        results.append((account_label, False, {"error": "API user identifier not found"}))
+                        continue
 
-        # 尝试密码认证（用户名/邮箱 + 密码）
-        if provider_account:
-            print(
-                f"\nℹ️ {self.account_name}: Trying password authentication "
-                f"({mask_username(provider_account.username)})"
-            )
-            try:
-                username = provider_account.username
-                password = provider_account.password
-                if not username or not password:
-                    print(f"❌ {self.account_name}: Incomplete password account information")
-                    results.append(("password", False, {"error": "Incomplete password account information"}))
-                else:
-                    success, user_info = await self.sign_in_with_password(
-                        username,
-                        password,
-                        bypass_cookies,
-                        common_headers,
-                    )
+                    all_cookies = {**bypass_cookies, **user_cookies}
+                    success, user_info = await self.check_in_with_cookies(all_cookies, common_headers, api_user)
                     if success:
-                        print(
-                            f"✅ {self.account_name}: Password authentication successful "
-                            f"({mask_username(provider_account.username)})"
-                        )
-                        results.append(("password", True, user_info))
+                        print(f"✅ {self.account_name}: Cookies authentication successful")
+                        results.append((account_label, True, user_info))
                     else:
-                        print(
-                            f"❌ {self.account_name}: Password authentication failed "
-                            f"({mask_username(provider_account.username)})"
+                        print(f"❌ {self.account_name}: Cookies authentication failed")
+                        results.append((account_label, False, user_info))
+                except Exception as e:
+                    print(f"❌ {self.account_name}: Cookies authentication error: {e}")
+                    results.append((account_label, False, {"error": str(e)}))
+
+        # 尝试密码认证（用户名/邮箱 + 密码，支持 user 数组）
+        if users:
+            for idx, user_account in enumerate(users):
+                account_label = f"user[{idx}]" if len(users) > 1 else "user"
+                print(f"\nℹ️ {self.account_name}: Trying password authentication ({mask_username(user_account.username)})")
+                try:
+                    username = user_account.username
+                    password = user_account.password
+                    if not username or not password:
+                        print(f"❌ {self.account_name}: Incomplete password account information")
+                        results.append((account_label, False, {"error": "Incomplete password account information"}))
+                    else:
+                        success, user_info = await self.sign_in_with_password(
+                            username,
+                            password,
+                            bypass_cookies,
+                            common_headers,
                         )
-                        results.append(("password", False, user_info))
-            except Exception as e:
-                print(
-                    f"❌ {self.account_name}: Password authentication error "
-                    f"({mask_username(provider_account.username)}): {e}"
-                )
-                results.append(("password", False, {"error": str(e)}))
+                        if success:
+                            print(
+                                f"✅ {self.account_name}: Password authentication successful "
+                                f"({mask_username(user_account.username)})"
+                            )
+                            results.append((account_label, True, user_info))
+                        else:
+                            print(
+                                f"❌ {self.account_name}: Password authentication failed "
+                                f"({mask_username(user_account.username)})"
+                            )
+                            results.append((account_label, False, user_info))
+                except Exception as e:
+                    print(
+                        f"❌ {self.account_name}: Password authentication error "
+                        f"({mask_username(user_account.username)}): {e}"
+                    )
+                    results.append((account_label, False, {"error": str(e)}))
 
         # 尝试 GitHub 认证（支持多个账号）
         if github_accounts:
