@@ -845,7 +845,21 @@ class CheckIn:
         }
 
         # 调用 get_cdk 函数，返回同步生成器或异步生成器
-        cdk_generator = self.provider_config.get_cdk(self.account_config)
+        # 优先兼容新签名：get_cdk(account_config, runtime_cookies)
+        get_cdk_func = self.provider_config.get_cdk
+        try:
+            sig = inspect.signature(get_cdk_func)
+            supports_runtime_cookies = (
+                any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in sig.parameters.values())
+                or len(sig.parameters) >= 2
+            )
+        except Exception:
+            supports_runtime_cookies = False
+
+        if supports_runtime_cookies:
+            cdk_generator = get_cdk_func(self.account_config, cookies)
+        else:
+            cdk_generator = get_cdk_func(self.account_config)
         
         topup_count = 0
         error_msg = ""
