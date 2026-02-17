@@ -63,6 +63,9 @@
 - `cookies` 在主流程中仅支持数组格式
 - 每个 `cookies[i]` 必须带 `api_user`
 - `linux.do` 和 `github` 仍支持 `true | object | array`
+- `runawaytime` 可选账号级参数 `runaway_max_wheel_spins`：
+  - 默认 `0`（本次转盘转到不能转为止）
+  - 设置正整数可限制本次最大转盘次数
 
 ### 全局账号池（可选）
 
