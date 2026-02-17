@@ -6,6 +6,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import sys
 from datetime import datetime
 from dotenv import load_dotenv
@@ -34,6 +35,20 @@ def generate_balance_hash(balances: dict) -> str:
     return hashlib.sha256(balance_json.encode("utf-8")).hexdigest()[:16]
 
 
+def _normalize_notify_format(value: str | None, default: str = "both") -> str:
+    """Normalize notify format to one of: detail, summary, both."""
+    if not value:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in {"detail", "detailed"}:
+        return "detail"
+    if normalized in {"summary", "brief"}:
+        return "summary"
+    if normalized in {"both", "all", "full"}:
+        return "both"
+    return default
+
+
 async def main():
     """运行签到流程
 
@@ -53,6 +68,8 @@ async def main():
         return 1
     
     print(f"⚙️ Found {len(app_config.accounts)} account(s)")
+    notify_format = _normalize_notify_format(os.getenv("CHECKIN_NOTIFY_FORMAT"), default="both")
+    print(f"⚙️ notify_format={notify_format}")
 
     # 加载余额hash
     last_balance_hash = load_balance_hash(BALANCE_HASH_FILE)
@@ -181,8 +198,12 @@ async def main():
             summary.append("❌ All accounts check-in failed")
 
         time_info = f'🕓 Execution time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'
-
-        notify_content = "\n\n".join([time_info, "\n".join(notification_content), "\n".join(summary)])
+        sections = [time_info]
+        if notify_format in {"detail", "both"}:
+            sections.append("\n".join(notification_content))
+        if notify_format in {"summary", "both"}:
+            sections.append("\n".join(summary))
+        notify_content = "\n\n".join(sections)
 
         print(notify_content)
         notify.push_message("Check-in Alert", notify_content, msg_type="text")

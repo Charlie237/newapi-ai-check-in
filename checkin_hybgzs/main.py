@@ -74,6 +74,20 @@ def _to_bool(value, default: bool = True) -> bool:
     return default
 
 
+def _normalize_notify_format(value: str | None, default: str = "both") -> str:
+    """Normalize notify format to one of: detail, summary, both."""
+    if not value:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in {"detail", "detailed"}:
+        return "detail"
+    if normalized in {"summary", "brief"}:
+        return "summary"
+    if normalized in {"both", "all", "full"}:
+        return "both"
+    return default
+
+
 def _parse_linuxdo_credential(value) -> LinuxDoCredential | None:
     if not isinstance(value, dict):
         return None
@@ -206,6 +220,7 @@ async def main() -> int:
     proxy = load_proxy()
     debug = _to_bool(os.getenv("DEBUG", "false"), default=False)
     max_wheel_spins = int(os.getenv("HYBGZS_MAX_WHEEL_SPINS", "5"))
+    notify_format = _normalize_notify_format(os.getenv("HYBGZS_NOTIFY_FORMAT"), default="both")
 
     success_count = 0
     lines: list[str] = []
@@ -246,16 +261,18 @@ async def main() -> int:
     else:
         summary.append("all accounts failed")
 
-    report = "\n".join(
-        [
-            f"time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            "",
-            "details:",
-            *lines,
-            "",
-            *summary,
-        ]
-    )
+    sections = [f"time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]
+    if notify_format in {"detail", "both"}:
+        sections.extend(
+            [
+                "",
+                "details:",
+                *(lines if lines else ["-"]),
+            ]
+        )
+    if notify_format in {"summary", "both"}:
+        sections.extend(["", *summary])
+    report = "\n".join(sections)
 
     print(report)
     notify.push_message("hybgzs automation", report, msg_type="text")
