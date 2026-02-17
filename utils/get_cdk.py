@@ -61,6 +61,14 @@ def _normalize_cookie_dict(cookies_data) -> dict:
     return {}
 
 
+def _to_non_negative_int(value, default: int = 0) -> int:
+    try:
+        parsed = int(str(value).strip())
+    except Exception:
+        return default
+    return parsed if parsed >= 0 else default
+
+
 def _cookie_domain_matches(cookie_domain: str, target_domain: str) -> bool:
     cookie_domain = (cookie_domain or "").lstrip(".").lower()
     target_domain = (target_domain or "").lstrip(".").lower()
@@ -308,6 +316,11 @@ async def get_runawaytime_cdk(
         fuli_cookies = runtime_cookies_dict
 
     linux_do_accounts = account_config.linux_do or []
+    max_wheel_spins = _to_non_negative_int(account_config.get("runaway_max_wheel_spins", 0), default=0)
+    if max_wheel_spins == 0:
+        print(f"ℹ️ {account_name}: runaway_max_wheel_spins=0, will spin until exhausted")
+    else:
+        print(f"ℹ️ {account_name}: runaway_max_wheel_spins={max_wheel_spins}")
     if not fuli_cookies and linux_do_accounts:
         for idx, ld_account in enumerate(linux_do_accounts):
             if not ld_account.username or not ld_account.password:
@@ -439,7 +452,7 @@ async def get_runawaytime_cdk(
                     else:
                         print(f"ℹ️ {account_name}: {remaining} wheel spin(s) remaining")
 
-            # 执行大转盘（循环直到 remaining <= 0）
+            # 执行大转盘（0=不限制，直到 remaining <= 0）
             if remaining > 0:
                 wheel_headers = headers.copy()
                 wheel_headers.update(
@@ -453,9 +466,10 @@ async def get_runawaytime_cdk(
                     }
                 )
 
+                spins_to_run = remaining if max_wheel_spins == 0 else min(remaining, max_wheel_spins)
                 spin_count = 0
 
-                while remaining > 0:
+                while remaining > 0 and spin_count < spins_to_run:
                     response = session.post(
                         "https://fuli.hxi.me/api/wheel",
                         headers=wheel_headers,
@@ -496,6 +510,11 @@ async def get_runawaytime_cdk(
 
                 if spin_count > 0:
                     print(f"✅ {account_name}: Total {spin_count} CDK(s) obtained from wheel")
+                if max_wheel_spins > 0 and remaining > 0 and spin_count >= spins_to_run:
+                    print(
+                        f"ℹ️ {account_name}: Reached runaway_max_wheel_spins limit "
+                        f"({max_wheel_spins}), stop this run"
+                    )
         finally:
             session.close()
     except Exception as e:
