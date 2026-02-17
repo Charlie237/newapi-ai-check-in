@@ -273,13 +273,60 @@ class HybgzsCheckIn:
                         const hasCfInput = !!document.querySelector("input[name='cf-turnstile-response'], textarea[name='cf-turnstile-response']");
                         const hasCfIframe = !!document.querySelector("iframe[src*='challenges.cloudflare.com']");
                         const text = (document.body?.innerText || "").toLowerCase();
-                        const hasHumanText = text.includes("verify you are human") || text.includes("人机验证");
+                        const hasHumanText =
+                            text.includes("verify you are human") ||
+                            text.includes("人机验证") ||
+                            text.includes("你是真的人类吗");
                         return hasCfScript || hasCfInput || hasCfIframe || hasHumanText;
                     }"""
                 )
             )
         except Exception:
             return False
+
+    async def _click_turnstile_verify_fallback(self, page) -> bool:
+        # Some pages render Turnstile without a discoverable iframe.
+        selectors = [
+            "label:has-text('Verify you are human')",
+            "div:has-text('Verify you are human')",
+            "span:has-text('Verify you are human')",
+            "text=Verify you are human",
+            "text=verify you are human",
+        ]
+
+        for selector in selectors:
+            try:
+                locator = page.locator(selector).first
+                if await locator.count() == 0:
+                    continue
+                if not await locator.is_visible(timeout=400):
+                    continue
+                box = await locator.bounding_box()
+                if not box:
+                    continue
+
+                center_y = box["y"] + (box["height"] / 2)
+                left_x = max(2, box["x"] - 24)
+                near_x = box["x"] + min(16, max(2, box["width"] / 6))
+
+                await page.mouse.click(left_x, center_y)
+                await page.wait_for_timeout(700)
+                await page.mouse.click(near_x, center_y)
+                await page.wait_for_timeout(900)
+                return True
+            except Exception:
+                continue
+
+        try:
+            role_checkbox = page.locator("[role='checkbox']").first
+            if await role_checkbox.count() > 0 and await role_checkbox.is_visible(timeout=400):
+                await role_checkbox.click(timeout=1500)
+                await page.wait_for_timeout(900)
+                return True
+        except Exception:
+            pass
+
+        return False
 
     async def _solve_cf_challenge(self, page) -> bool:
         try:
@@ -301,17 +348,32 @@ class HybgzsCheckIn:
             return False
 
     async def _solve_turnstile_checkbox(self, page) -> bool:
+        if not (await self._is_turnstile_modal_visible(page) or await self._has_turnstile_markers(page)):
+            return True
+
         try:
-            if not await self._prepare_click_solver(page):
-                return False
-            await self._click_solver.solve_captcha(
-                captcha_container=page,
-                captcha_type=CaptchaType.CLOUDFLARE_TURNSTILE,
-            )
-            await page.wait_for_timeout(2500)
-            return not await self._is_turnstile_modal_visible(page)
+            has_cf_iframe = await page.locator("iframe[src*='challenges.cloudflare.com']").count()
+            if has_cf_iframe > 0 and await self._prepare_click_solver(page):
+                await self._click_solver.solve_captcha(
+                    captcha_container=page,
+                    captcha_type=CaptchaType.CLOUDFLARE_TURNSTILE,
+                )
+                await page.wait_for_timeout(2200)
+                if not await self._is_turnstile_modal_visible(page):
+                    return True
         except Exception:
-            return False
+            pass
+
+        for _ in range(3):
+            clicked = await self._click_turnstile_verify_fallback(page)
+            await page.wait_for_timeout(900)
+            if not await self._is_turnstile_modal_visible(page):
+                return True
+            if not clicked:
+                break
+
+        await page.wait_for_timeout(1000)
+        return not await self._is_turnstile_modal_visible(page)
 
     async def _login_via_linuxdo(self, page) -> tuple[bool, str]:
         if not self.credential:
@@ -435,14 +497,14 @@ class HybgzsCheckIn:
 
         await page.wait_for_timeout(1200)
         solved_turnstile = False
-        if await self._is_turnstile_modal_visible(page) or await self._has_turnstile_markers(page):
+        turnstile_seen = await self._is_turnstile_modal_visible(page) or await self._has_turnstile_markers(page)
+        if turnstile_seen:
             solved_turnstile = await self._solve_turnstile_checkbox(page)
-            # If verification completed but check-in did not auto-submit, retry once.
-            if solved_turnstile:
+            # After verification attempt, retry once even if solver result is unknown.
+            await page.wait_for_timeout(900)
+            ok_retry, _ = await self._click_first(page, [selector, *CHECKIN_BUTTON_SELECTORS])
+            if ok_retry:
                 await page.wait_for_timeout(900)
-                ok_retry, _ = await self._click_first(page, [selector, *CHECKIN_BUTTON_SELECTORS])
-                if ok_retry:
-                    await page.wait_for_timeout(900)
 
         err3 = ""
         for idx in range(35):
@@ -461,18 +523,34 @@ class HybgzsCheckIn:
                 text = str((api_submit.get("json") or {}).get("error") or api_submit.get("text") or "")
                 if api_submit.get("status") == 200:
                     await page.wait_for_timeout(1200)
-                elif self._text_contains_turnstile_hint(text):
-                    solved_turnstile = await self._solve_turnstile_checkbox(page) or solved_turnstile
-                    if solved_turnstile:
+                else:
+                    need_verify = self._text_contains_turnstile_hint(text) or await self._is_turnstile_modal_visible(page)
+                    if not need_verify:
+                        need_verify = await self._has_turnstile_markers(page)
+                    if need_verify:
+                        solved_turnstile = await self._solve_turnstile_checkbox(page) or solved_turnstile
                         await page.wait_for_timeout(900)
                         await self._click_first(page, [selector, *CHECKIN_BUTTON_SELECTORS])
+                        await page.wait_for_timeout(900)
+                await page.wait_for_timeout(700)
+
+            # Modal may appear later; retry solve during polling.
+            if idx in {4, 12, 20, 28} and await self._is_turnstile_modal_visible(page):
+                solved_turnstile = await self._solve_turnstile_checkbox(page) or solved_turnstile
+                await page.wait_for_timeout(900)
+                await self._click_first(page, [selector, *CHECKIN_BUTTON_SELECTORS])
                 await page.wait_for_timeout(700)
 
             await page.wait_for_timeout(2000)
 
         feedback = await self._extract_feedback_text(page)
         await take_screenshot(page, "hybgzs_checkin_timeout", self.account_name)
-        return False, {"error": f"checkin not confirmed ({feedback or 'no feedback'}; {err3})"}
+        turnstile_open = await self._is_turnstile_modal_visible(page)
+        return False, {
+            "error": f"checkin not confirmed ({feedback or 'no feedback'}; {err3})",
+            "turnstile_open": turnstile_open,
+            "turnstile_solved": solved_turnstile,
+        }
 
     async def _wheel_status(self, page) -> tuple[bool, int, str]:
         resp = await self._fetch_json(page, "/api/wheel")
