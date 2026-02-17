@@ -9,4 +9,5 @@ storage-states
 logs
 balance_hash.txt
 balance_hash_*.txt
-linuxdo_reads
+github-secrets.production.template
+github-secrets.production.template.json
