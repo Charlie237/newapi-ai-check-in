@@ -104,13 +104,13 @@
 
 ```json
 [
-  {"name": "qaq-main", "linux.do": true},
-  {"name": "qaq-fallback", "sid": "your_sid"}
+  {"name": "qaq-main", "linux.do": true, "tier": 4},
+  {"name": "qaq-fallback", "sid": "your_sid", "tier": 4}
 ]
 ```
 
 可选：
-- `QAQ_AL_TIER`（默认 `4`）
+- `tier`：账号级参数，写在 `ACCOUNTS_QAQ_AL[*].tier`，默认 `4`
 - `PROXY_QAQ_AL`
 
 ## 认证执行顺序（主流程）
@@ -162,6 +162,10 @@ highlights: 账号D(ok:cookies,user); 账号E(ok:linux.do)
 - `accounts_success`：成功账号数
 - `auth_methods_success`：认证方式维度成功数
 - `trigger`：触发通知原因（如 `first_run`、`balance_changed`、`account_failure`、`partial_failure`）
+- 通知格式可选：`detail | summary | both`
+  - 主流程：`CHECKIN_NOTIFY_FORMAT`
+  - qaq.al：`QAQ_AL_NOTIFY_FORMAT`
+  - hybgzs：`HYBGZS_NOTIFY_FORMAT`
 
 ## 可用通知渠道
 
