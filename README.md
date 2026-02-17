@@ -121,7 +121,7 @@ Affs:
       //provider: x666 可选配置（自动通过 linux.do 登录获取）
       // "access_token": "来自 https://qd.x666.me/",  // 已废弃，会自动获取
       "get_cdk_cookies": {
-        // provider: runawaytime 必须配置
+        // provider: runawaytime 可选（优先复用主签到 cookies，其次 LinuxDo 自动登录，最后回退到这里）
         "session": "来自 https://fuli.hxi.me/",
         // provider: b4u 必须配置
         "__Secure-authjs.session-token": "来自 https://tw.b4u.qzz.io/"
