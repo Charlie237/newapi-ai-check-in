@@ -83,7 +83,6 @@ jobs:
         env:
           ACCOUNTS_HYBGZS: ${{ secrets.ACCOUNTS_HYBGZS }}
           ACCOUNTS_LINUX_DO: ${{ secrets.ACCOUNTS_LINUX_DO }}
-          HYBGZS_MAX_WHEEL_SPINS: ${{ secrets.HYBGZS_MAX_WHEEL_SPINS || vars.HYBGZS_MAX_WHEEL_SPINS || '5' }}
           DEBUG: ${{ github.event_name == 'workflow_dispatch' && inputs.debug || vars.DEBUG || 'false' }}
           DINGDING_WEBHOOK: ${{ secrets.DINGDING_WEBHOOK }}
           EMAIL_USER: ${{ secrets.EMAIL_USER }}

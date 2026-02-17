@@ -6,7 +6,6 @@ Environment:
 - ACCOUNTS_HYBGZS: JSON array
 - ACCOUNTS_LINUX_DO: optional global LinuxDo credentials
 - PROXY_HYBGZS: optional proxy JSON/string
-- HYBGZS_MAX_WHEEL_SPINS: optional int, default 5, 0 means all
 - DEBUG: true/false
 """
 
@@ -37,6 +36,7 @@ class AccountConfig:
     cookies: dict
     credential: LinuxDoCredential | None
     run_wheel: bool
+    max_wheel_spins: int = 5
 
 
 def _strip_code_fence(text: str) -> str:
@@ -72,6 +72,14 @@ def _to_bool(value, default: bool = True) -> bool:
         if v in {"0", "false", "no", "off"}:
             return False
     return default
+
+
+def _to_non_negative_int(value, default: int = 5) -> int:
+    try:
+        parsed = int(str(value).strip())
+    except Exception:
+        return default
+    return parsed if parsed >= 0 else default
 
 
 def _normalize_notify_format(value: str | None, default: str = "both") -> str:
@@ -170,6 +178,7 @@ def load_accounts() -> list[AccountConfig]:
         cookies = {}
         credential = None
         run_wheel = True
+        max_wheel_spins = 5
 
         if isinstance(item, str):
             cookies = parse_cookies(item)
@@ -178,6 +187,7 @@ def load_accounts() -> list[AccountConfig]:
             cookies = parse_cookies(item.get("cookies", ""))
             credential = _pick_credential(item, global_linuxdo, idx)
             run_wheel = _to_bool(item.get("wheel"), default=True)
+            max_wheel_spins = _to_non_negative_int(item.get("max_wheel_spins", 5), default=5)
         else:
             continue
 
@@ -190,7 +200,15 @@ def load_accounts() -> list[AccountConfig]:
             print(f"Skip {name}: no cookies and no LinuxDo credential")
             continue
 
-        result.append(AccountConfig(name=name, cookies=cookies, credential=credential, run_wheel=run_wheel))
+        result.append(
+            AccountConfig(
+                name=name,
+                cookies=cookies,
+                credential=credential,
+                run_wheel=run_wheel,
+                max_wheel_spins=max_wheel_spins,
+            )
+        )
 
     return result
 
@@ -219,7 +237,6 @@ async def main() -> int:
 
     proxy = load_proxy()
     debug = _to_bool(os.getenv("DEBUG", "false"), default=False)
-    max_wheel_spins = int(os.getenv("HYBGZS_MAX_WHEEL_SPINS", "5"))
     notify_format = _normalize_notify_format(os.getenv("HYBGZS_NOTIFY_FORMAT"), default="both")
 
     success_count = 0
@@ -232,7 +249,7 @@ async def main() -> int:
             credential=account.credential,
             proxy=proxy,
             run_wheel=account.run_wheel,
-            max_wheel_spins=max_wheel_spins,
+            max_wheel_spins=account.max_wheel_spins,
             debug=debug,
         )
 

@@ -89,13 +89,13 @@
 
 ```json
 [
-  {"name": "hybgzs-main", "linux.do": true, "wheel": true},
-  {"name": "hybgzs-backup", "cookies": {"__Secure-next-auth.session-token": "your_cookie"}, "wheel": false}
+  {"name": "hybgzs-main", "linux.do": true, "wheel": true, "max_wheel_spins": 5},
+  {"name": "hybgzs-backup", "cookies": {"__Secure-next-auth.session-token": "your_cookie"}, "wheel": false, "max_wheel_spins": 0}
 ]
 ```
 
 可选：
-- `HYBGZS_MAX_WHEEL_SPINS`（默认 `5`，`0` 表示本次跑完全部剩余次数）
+- `max_wheel_spins`：账号级参数，写在 `ACCOUNTS_HYBGZS[*].max_wheel_spins`，默认 `5`，`0` 表示本次跑完全部剩余次数
 - `PROXY_HYBGZS`
 
 ### `qaq.al` 工作流
