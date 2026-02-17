@@ -93,7 +93,6 @@ jobs:
           ACCOUNTS_QAQ_AL: ${{ secrets.ACCOUNTS_QAQ_AL }}
           ACCOUNTS_LINUX_DO: ${{ secrets.ACCOUNTS_LINUX_DO }}
           PROXY: ${{ secrets.PROXY_QAQ_AL }}
-          QAQ_AL_TIER: ${{ vars.QAQ_AL_TIER || '4' }}
           DEBUG: ${{ github.event_name == 'workflow_dispatch' && inputs.debug || vars.DEBUG || 'false' }}
           DINGDING_WEBHOOK: ${{ secrets.DINGDING_WEBHOOK }}
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
@@ -106,6 +105,7 @@ jobs:
           WEIXIN_WEBHOOK: ${{ secrets.WEIXIN_WEBHOOK }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          QAQ_AL_NOTIFY_FORMAT: ${{ secrets.QAQ_AL_NOTIFY_FORMAT || vars.QAQ_AL_NOTIFY_FORMAT || 'detail' }}
         run: uv run python -u checkin_qaq_al/main.py
 
       - name: Save storage-state cache

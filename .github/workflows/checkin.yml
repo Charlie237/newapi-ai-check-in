@@ -122,6 +122,7 @@ jobs:
         WEIXIN_WEBHOOK: ${{ secrets.WEIXIN_WEBHOOK }}
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        CHECKIN_NOTIFY_FORMAT: ${{ secrets.CHECKIN_NOTIFY_FORMAT || vars.CHECKIN_NOTIFY_FORMAT || 'summary' }}
       run: |
         # 列出 storage-states 目录文件
         if (Test-Path "storage-states") {

@@ -96,6 +96,7 @@ jobs:
           WEIXIN_WEBHOOK: ${{ secrets.WEIXIN_WEBHOOK }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          HYBGZS_NOTIFY_FORMAT: ${{ secrets.HYBGZS_NOTIFY_FORMAT || vars.HYBGZS_NOTIFY_FORMAT || 'detail' }}
         run: uv run python -u checkin_hybgzs/main.py
 
       - name: Save storage-state cache
