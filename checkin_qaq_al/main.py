@@ -4,7 +4,7 @@ qaq.al auto check-in entrypoint.
 
 Authentication strategy per account:
 1) LinuxDo login + cached storage-state fallback
-2) sid fallback (if provided)
+2) sid fallback (if provided or cached)
 """
 
 from __future__ import annotations
