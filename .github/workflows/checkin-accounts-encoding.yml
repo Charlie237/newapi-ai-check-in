@@ -8,6 +8,11 @@ on:
         required: false
         type: string
         default: ""
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/checkin-accounts-encoding.yml"
 
 jobs:
   validate-accounts:
