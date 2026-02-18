@@ -423,6 +423,8 @@ class CheckIn:
                 or "linux.do/challenge" in url
             ):
                 return True
+            if "linux.do/login" in url:
+                return False
             title = (await page.title()).lower()
             if "just a moment" in title or "attention required" in title or "security check" in title:
                 return True
@@ -470,6 +472,39 @@ class CheckIn:
             except Exception:
                 continue
         return False, ""
+
+    async def _submit_linuxdo_login(self, page, credential: LinuxDoCredential) -> tuple[bool, str]:
+        field_sets = [
+            ("#login-account-name", "#login-account-password", "#login-button"),
+            ("#signin_username", "#signin_password", "#signin-button"),
+            ("input[name='username']", "input[name='password']", "#signin-button"),
+            ("input[name='login']", "input[name='password']", "#login-button"),
+        ]
+
+        for username_selector, password_selector, submit_selector in field_sets:
+            try:
+                user_locator = page.locator(username_selector)
+                pass_locator = page.locator(password_selector)
+                if await user_locator.count() == 0 or await pass_locator.count() == 0:
+                    continue
+
+                await user_locator.first.fill(credential.username)
+                await pass_locator.first.fill(credential.password)
+
+                submit_locator = page.locator(submit_selector)
+                if await submit_locator.count() > 0:
+                    try:
+                        await submit_locator.first.click(timeout=5000)
+                    except Exception:
+                        await submit_locator.first.click(timeout=5000, force=True)
+                else:
+                    await pass_locator.first.press("Enter")
+
+                return True, f"{username_selector} + {password_selector} -> {submit_selector}"
+            except Exception:
+                continue
+
+        return False, "no supported linux.do login form selectors matched"
 
     async def _open_linuxdo_auth_entry(self, page) -> tuple[bool, str]:
         entry_urls = [
@@ -556,8 +591,10 @@ class CheckIn:
 
                 login_submitted = False
                 approve_clicked = False
+                login_submit_attempts = 0
+                last_login_attempt_loop = -999
 
-                for _ in range(160):
+                for loop_idx in range(220):
                     sid = await self._extract_sid_from_context(context)
                     if sid and await self._is_qaq_logged_in(page):
                         await context.storage_state(path=cache_file_path)
@@ -575,14 +612,19 @@ class CheckIn:
                         continue
 
                     url = page.url.lower()
-                    if "linux.do/login" in url and not login_submitted:
-                        try:
-                            await page.fill("#login-account-name", credential.username)
-                            await page.fill("#login-account-password", credential.password)
-                            await page.click("#login-button")
+                    should_retry_login = (loop_idx - last_login_attempt_loop) >= 40
+                    if "linux.do/login" in url and (not login_submitted or should_retry_login):
+                        submitted, submit_message = await self._submit_linuxdo_login(page, credential)
+                        if submitted:
+                            login_submit_attempts += 1
+                            last_login_attempt_loop = loop_idx
                             login_submitted = True
-                        except Exception:
-                            pass
+                            print(
+                                f"  {self.account_name}: linux.do credential submitted "
+                                f"(attempt={login_submit_attempts}, form={submit_message})"
+                            )
+                        elif not login_submitted:
+                            print(f"  {self.account_name}: linux.do form not ready ({submit_message})")
 
                     if "connect.linux.do" in url:
                         try:
@@ -595,7 +637,7 @@ class CheckIn:
 
                     await page.wait_for_timeout(1200)
 
-                return "", f"linuxdo login timeout (url={page.url})"
+                return "", f"linuxdo login timeout (url={page.url}, submit_attempts={login_submit_attempts})"
             finally:
                 await page.close()
                 await context.close()
