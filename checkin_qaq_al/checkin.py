@@ -5,7 +5,7 @@ qaq.al check-in runner.
 Authentication priority:
 1) LinuxDo login with storage-state cache restore.
 2) Fallback to provided sid.
-3) Fallback to cached sid.
+3) Fallback to cached sid / storage-state sid.
 """
 
 from __future__ import annotations
@@ -33,8 +33,12 @@ BENCH_ROUNDS = 3
 BENCH_DURATION_MS = 1200
 
 LOGIN_BUTTON_SELECTORS = [
+    "a.glass-btn.gradient[href='/auth/login']",
     "a[href='/auth/login']",
     "a[href*='/auth/login']",
+    "a:has-text('使用 LinuxDO 登录')",
+    "a:has-text('使用 LinuxDo 登录')",
+    "a:has-text('LinuxDO 认证')",
     "a[href*='connect.linux.do']",
     "a[href*='linuxdo']",
     "a[href*='linux.do']",
@@ -147,6 +151,13 @@ class CheckIn:
         self.debug = debug
         os.makedirs(self.storage_state_dir, exist_ok=True)
 
+    def _get_storage_state_path(self, credential: LinuxDoCredential | None) -> str:
+        if credential and credential.username:
+            username_hash = hashlib.sha256(credential.username.encode("utf-8")).hexdigest()[:8]
+            return os.path.join(self.storage_state_dir, f"qaq_al_{username_hash}_storage_state.json")
+        account_hash = hashlib.sha256(self.account_name.encode("utf-8")).hexdigest()[:8]
+        return os.path.join(self.storage_state_dir, f"qaq_al_{account_hash}_storage_state.json")
+
     def _build_sid_cache_key(self, credential: LinuxDoCredential | None) -> str:
         if credential and credential.username:
             username_hash = hashlib.sha256(credential.username.encode("utf-8")).hexdigest()[:16]
@@ -190,6 +201,39 @@ class CheckIn:
             print(f"  {self.account_name}: sid cache updated")
         except Exception as exc:
             print(f"  {self.account_name}: sid cache save failed: {exc}")
+
+    def _read_sid_from_storage_state(self, credential: LinuxDoCredential | None) -> str:
+        state_path = self._get_storage_state_path(credential)
+        if not os.path.exists(state_path):
+            print(f"  {self.account_name}: storage-state sid miss")
+            return ""
+
+        try:
+            with open(state_path, encoding="utf-8") as f:
+                state = json.load(f)
+            cookies = state.get("cookies", []) if isinstance(state, dict) else []
+            if not isinstance(cookies, list):
+                print(f"  {self.account_name}: storage-state sid miss")
+                return ""
+
+            for item in cookies:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("name", "")).strip().lower() != "sid":
+                    continue
+                sid = str(item.get("value", "")).strip()
+                if not sid:
+                    continue
+                domain = str(item.get("domain", "")).strip().lower()
+                if "qaq.al" not in domain:
+                    continue
+                print(f"  {self.account_name}: storage-state sid hit")
+                return sid
+        except Exception:
+            pass
+
+        print(f"  {self.account_name}: storage-state sid miss")
+        return ""
 
     async def _get_cf_clearance(self) -> tuple[dict | None, dict | None]:
         """Get cf_clearance and browser fingerprint headers."""
@@ -418,26 +462,33 @@ class CheckIn:
         ]
         for entry_url in entry_urls:
             try:
-                await page.goto(entry_url, wait_until="domcontentloaded")
-                await page.wait_for_timeout(1200)
+                await page.goto(entry_url, wait_until="domcontentloaded", timeout=20000)
             except Exception:
                 continue
 
-            current_url = page.url.lower()
-            if "connect.linux.do" in current_url or "/oauth2/authorize" in current_url:
-                return True, f"direct:{entry_url}"
+            for _ in range(10):
+                current_url = page.url.lower()
+                if "connect.linux.do" in current_url or "/oauth2/authorize" in current_url:
+                    return True, f"direct:{entry_url}"
 
-            clicked, used_selector = await self._click_first(page, LOGIN_BUTTON_SELECTORS)
-            if clicked:
+                if await self._is_cf_challenge_page(page):
+                    solved = await self._solve_cf_interstitial(page)
+                    if solved:
+                        await page.wait_for_timeout(1600)
+                        continue
+
+                clicked, used_selector = await self._click_first(page, LOGIN_BUTTON_SELECTORS)
+                if clicked:
+                    await page.wait_for_timeout(800)
+                    return True, used_selector
+
                 await page.wait_for_timeout(800)
-                return True, used_selector
 
         return False, ""
 
     async def _login_and_get_sid(self, credential: LinuxDoCredential) -> tuple[str, str]:
         """Login via LinuxDo in browser and return sid (with cache restore/save)."""
-        username_hash = hashlib.sha256(credential.username.encode("utf-8")).hexdigest()[:8]
-        cache_file_path = os.path.join(self.storage_state_dir, f"qaq_al_{username_hash}_storage_state.json")
+        cache_file_path = self._get_storage_state_path(credential)
         storage_state = cache_file_path if os.path.exists(cache_file_path) else None
 
         print(f"  {self.account_name}: trying LinuxDo login (cache={'hit' if storage_state else 'miss'})")
@@ -532,7 +583,9 @@ class CheckIn:
         errors: list[str] = []
         cache_key = self._build_sid_cache_key(credential)
         cached_sid = self._read_cached_sid(cache_key)
-        sid_fallback = str(sid or "").strip() or cached_sid
+        storage_state_sid = self._read_sid_from_storage_state(credential)
+        direct_sid = str(sid or "").strip()
+        sid_fallback = direct_sid or cached_sid or storage_state_sid
 
         if credential:
             refreshed_sid, login_msg = await self._login_and_get_sid(credential)
@@ -550,7 +603,12 @@ class CheckIn:
             errors.append("linuxdo credential missing")
 
         if sid_fallback:
-            auth_source = "sid_fallback" if sid else "sid_cache_fallback"
+            if direct_sid:
+                auth_source = "sid_fallback"
+            elif cached_sid:
+                auth_source = "sid_cache_fallback"
+            else:
+                auth_source = "sid_storage_state_fallback"
             ok, result = await self._execute_with_sid(sid_fallback, tier, auth_source=auth_source)
             if ok:
                 self._save_cached_sid(cache_key, sid_fallback)
