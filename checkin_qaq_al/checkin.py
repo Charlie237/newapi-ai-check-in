@@ -547,6 +547,16 @@ class CheckIn:
 
         return False, ""
 
+    async def _restart_qaq_oauth(self, page) -> bool:
+        """Re-enter qaq OAuth flow after LinuxDo login appears stuck."""
+        try:
+            await page.goto(f"{BASE_URL}/auth/login", wait_until="domcontentloaded", timeout=25000)
+            await page.wait_for_timeout(1500)
+            return True
+        except Exception as exc:
+            print(f"  {self.account_name}: failed to re-enter qaq oauth: {exc}")
+            return False
+
     async def _login_and_get_sid(self, credential: LinuxDoCredential) -> tuple[str, str]:
         """Login via LinuxDo in browser and return sid (with cache restore/save)."""
         cache_file_path = self._get_storage_state_path(credential)
@@ -593,6 +603,8 @@ class CheckIn:
                 approve_clicked = False
                 login_submit_attempts = 0
                 last_login_attempt_loop = -999
+                oauth_reentry_attempts = 0
+                last_oauth_reentry_loop = -999
 
                 for loop_idx in range(220):
                     sid = await self._extract_sid_from_context(context)
@@ -635,9 +647,33 @@ class CheckIn:
                         except Exception:
                             pass
 
+                    should_retry_oauth = (
+                        login_submitted
+                        and "linux.do/" in url
+                        and "linux.do/login" not in url
+                        and "connect.linux.do" not in url
+                        and (loop_idx - last_oauth_reentry_loop) >= 25
+                        and oauth_reentry_attempts < 4
+                    )
+                    if should_retry_oauth:
+                        reentered = await self._restart_qaq_oauth(page)
+                        if reentered:
+                            oauth_reentry_attempts += 1
+                            last_oauth_reentry_loop = loop_idx
+                            print(
+                                f"  {self.account_name}: re-entered qaq oauth flow "
+                                f"(attempt={oauth_reentry_attempts}, url={page.url})"
+                            )
+                            await page.wait_for_timeout(1200)
+                            continue
+
                     await page.wait_for_timeout(1200)
 
-                return "", f"linuxdo login timeout (url={page.url}, submit_attempts={login_submit_attempts})"
+                return (
+                    "",
+                    "linuxdo login timeout "
+                    f"(url={page.url}, submit_attempts={login_submit_attempts}, oauth_reentry_attempts={oauth_reentry_attempts})",
+                )
             finally:
                 await page.close()
                 await context.close()
