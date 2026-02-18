@@ -1,6 +1,12 @@
 name: qaq.al auto checkin
 
 on:
+  push:
+    branches:
+      - fix/utf8-encoding-and-fast-check
+    paths:
+      - "checkin_qaq_al/**"
+      - ".github/workflows/checkin-qaq-al.yml"
   schedule:
     - cron: "0 */8 * * *"
   workflow_dispatch:
