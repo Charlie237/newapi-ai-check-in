@@ -25,9 +25,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from checkin_hybgzs.checkin import HybgzsCheckIn, LinuxDoCredential
 from utils.browser_utils import parse_cookies
+from utils.encoding import ensure_utf8_stdio
 from utils.notify import notify
 
-load_dotenv(override=True)
+ensure_utf8_stdio()
+load_dotenv(override=True, encoding="utf-8")
 
 
 @dataclass

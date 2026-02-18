@@ -19,6 +19,7 @@ jobs:
     environment: production
     env:
       PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
     steps:
       - name: Set Beijing timezone
         uses: szenius/set-timezone@v2.0
@@ -106,7 +107,13 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           QAQ_AL_NOTIFY_FORMAT: ${{ secrets.QAQ_AL_NOTIFY_FORMAT || vars.QAQ_AL_NOTIFY_FORMAT || 'detail' }}
-        run: uv run python -u checkin_qaq_al/main.py
+        run: |
+          $utf8 = [System.Text.UTF8Encoding]::new($false)
+          [Console]::InputEncoding = $utf8
+          [Console]::OutputEncoding = $utf8
+          $OutputEncoding = $utf8
+          chcp 65001 > $null
+          uv run python -u checkin_qaq_al/main.py
 
       - name: Save storage-state cache
         if: hashFiles('storage-states/*.json') != ''

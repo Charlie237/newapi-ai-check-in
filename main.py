@@ -11,12 +11,14 @@ import sys
 from datetime import datetime
 from dotenv import load_dotenv
 from utils.config import AppConfig
+from utils.encoding import ensure_utf8_stdio
 from utils.notify import notify
 from utils.balance_hash import load_balance_hash, save_balance_hash
 from utils.summary_notify import build_summary_message
 from checkin import CheckIn
 
-load_dotenv(override=True)
+ensure_utf8_stdio()
+load_dotenv(override=True, encoding="utf-8")
 
 BALANCE_HASH_FILE = "balance_hash.txt"
 

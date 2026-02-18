@@ -28,6 +28,7 @@ jobs:
     environment: production
     env:
       PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
     steps:
     - name: set beijing timezone
       uses: szenius/set-timezone@v2.0
@@ -139,6 +140,11 @@ jobs:
           echo "⚠️ storage-states 目录不存在"
         }
         # 执行签到
+        $utf8 = [System.Text.UTF8Encoding]::new($false)
+        [Console]::InputEncoding = $utf8
+        [Console]::OutputEncoding = $utf8
+        $OutputEncoding = $utf8
+        chcp 65001 > $null
         uv run python -u main.py
 
     - name: 保存登录状态缓存
