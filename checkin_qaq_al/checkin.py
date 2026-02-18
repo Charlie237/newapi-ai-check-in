@@ -5,11 +5,13 @@ qaq.al check-in runner.
 Authentication priority:
 1) LinuxDo login with storage-state cache restore.
 2) Fallback to provided sid.
+3) Fallback to cached sid / storage-state sid.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import statistics
 import sys
@@ -31,10 +33,21 @@ BENCH_ROUNDS = 3
 BENCH_DURATION_MS = 1200
 
 LOGIN_BUTTON_SELECTORS = [
+    "a.glass-btn.gradient[href='/auth/login']",
+    "a[href='/auth/login']",
+    "a[href*='/auth/login']",
+    "a:has-text('使用 LinuxDO 登录')",
+    "a:has-text('使用 LinuxDo 登录')",
+    "a:has-text('LinuxDO 认证')",
+    "a[href*='connect.linux.do']",
+    "a[href*='linuxdo']",
+    "a[href*='linux.do']",
     "button:has-text('LinuxDo')",
     "a:has-text('LinuxDo')",
     "button:has-text('LINUXDO')",
     "a:has-text('LINUXDO')",
+    "a:has-text('LinuxDO')",
+    "a:has-text('Linux.do')",
 ]
 
 APPROVE_BUTTON_SELECTOR = "a[href^='/oauth2/approve']"
@@ -134,8 +147,93 @@ class CheckIn:
         self.http_proxy_config = proxy_resolve(global_proxy)
         self.camoufox_proxy_config = global_proxy if global_proxy else None
         self.storage_state_dir = storage_state_dir
+        self.sid_cache_path = os.path.join(self.storage_state_dir, "qaq_al_sid_cache.json")
         self.debug = debug
         os.makedirs(self.storage_state_dir, exist_ok=True)
+
+    def _get_storage_state_path(self, credential: LinuxDoCredential | None) -> str:
+        if credential and credential.username:
+            username_hash = hashlib.sha256(credential.username.encode("utf-8")).hexdigest()[:8]
+            return os.path.join(self.storage_state_dir, f"qaq_al_{username_hash}_storage_state.json")
+        account_hash = hashlib.sha256(self.account_name.encode("utf-8")).hexdigest()[:8]
+        return os.path.join(self.storage_state_dir, f"qaq_al_{account_hash}_storage_state.json")
+
+    def _build_sid_cache_key(self, credential: LinuxDoCredential | None) -> str:
+        if credential and credential.username:
+            username_hash = hashlib.sha256(credential.username.encode("utf-8")).hexdigest()[:16]
+            return f"linuxdo:{username_hash}"
+        account_hash = hashlib.sha256(self.account_name.encode("utf-8")).hexdigest()[:16]
+        return f"account:{account_hash}"
+
+    def _load_sid_cache(self) -> dict[str, str]:
+        if not os.path.exists(self.sid_cache_path):
+            return {}
+        try:
+            with open(self.sid_cache_path, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return {str(k): str(v) for k, v in data.items() if isinstance(v, str) and v}
+        except Exception:
+            pass
+        return {}
+
+    def _read_cached_sid(self, cache_key: str) -> str:
+        sid = self._load_sid_cache().get(cache_key, "").strip()
+        if sid:
+            print(f"  {self.account_name}: sid cache hit")
+        else:
+            print(f"  {self.account_name}: sid cache miss")
+        return sid
+
+    def _save_cached_sid(self, cache_key: str, sid: str) -> None:
+        sid_value = str(sid or "").strip()
+        if not sid_value:
+            return
+        try:
+            cache = self._load_sid_cache()
+            if cache.get(cache_key) == sid_value:
+                return
+            cache[cache_key] = sid_value
+            tmp_path = f"{self.sid_cache_path}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(cache, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, self.sid_cache_path)
+            print(f"  {self.account_name}: sid cache updated")
+        except Exception as exc:
+            print(f"  {self.account_name}: sid cache save failed: {exc}")
+
+    def _read_sid_from_storage_state(self, credential: LinuxDoCredential | None) -> str:
+        state_path = self._get_storage_state_path(credential)
+        if not os.path.exists(state_path):
+            print(f"  {self.account_name}: storage-state sid miss")
+            return ""
+
+        try:
+            with open(state_path, encoding="utf-8") as f:
+                state = json.load(f)
+            cookies = state.get("cookies", []) if isinstance(state, dict) else []
+            if not isinstance(cookies, list):
+                print(f"  {self.account_name}: storage-state sid miss")
+                return ""
+
+            for item in cookies:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("name", "")).strip().lower() != "sid":
+                    continue
+                sid = str(item.get("value", "")).strip()
+                if not sid:
+                    continue
+                domain = str(item.get("domain", "")).strip().lower()
+                if "qaq.al" not in domain:
+                    continue
+                print(f"  {self.account_name}: storage-state sid hit")
+                return sid
+        except Exception:
+            pass
+
+        print(f"  {self.account_name}: storage-state sid miss")
+        return ""
 
     async def _get_cf_clearance(self) -> tuple[dict | None, dict | None]:
         """Get cf_clearance and browser fingerprint headers."""
@@ -317,13 +415,28 @@ class CheckIn:
     async def _is_cf_challenge_page(self, page) -> bool:
         try:
             url = page.url.lower()
-            if "__cf_chl_rt_tk" in url or "linux.do/challenge" in url:
+            if (
+                "__cf_chl_rt_tk" in url
+                or "__cf_chl_" in url
+                or "/cdn-cgi/challenge-platform" in url
+                or "/cdn-cgi/challenge" in url
+                or "linux.do/challenge" in url
+            ):
                 return True
+            if "linux.do/login" in url:
+                return False
             title = (await page.title()).lower()
-            if "just a moment" in title or "attention required" in title:
+            if "just a moment" in title or "attention required" in title or "security check" in title:
                 return True
             content = (await page.content()).lower()
-            return "checking your browser before accessing" in content
+            challenge_markers = (
+                "checking your browser before accessing",
+                "enable javascript and cookies to continue",
+                "challenge-platform",
+                "cf-challenge",
+                "challenge-form",
+            )
+            return any(marker in content for marker in challenge_markers)
         except Exception:
             return False
 
@@ -350,16 +463,93 @@ class CheckIn:
                 locator = page.locator(selector)
                 if await locator.count() == 0:
                     continue
-                await locator.first.click(timeout=5000)
+                target = locator.first
+                try:
+                    await target.click(timeout=5000)
+                except Exception:
+                    await target.click(timeout=5000, force=True)
                 return True, selector
             except Exception:
                 continue
         return False, ""
 
+    async def _submit_linuxdo_login(self, page, credential: LinuxDoCredential) -> tuple[bool, str]:
+        field_sets = [
+            ("#login-account-name", "#login-account-password", "#login-button"),
+            ("#signin_username", "#signin_password", "#signin-button"),
+            ("input[name='username']", "input[name='password']", "#signin-button"),
+            ("input[name='login']", "input[name='password']", "#login-button"),
+        ]
+
+        for username_selector, password_selector, submit_selector in field_sets:
+            try:
+                user_locator = page.locator(username_selector)
+                pass_locator = page.locator(password_selector)
+                if await user_locator.count() == 0 or await pass_locator.count() == 0:
+                    continue
+
+                await user_locator.first.fill(credential.username)
+                await pass_locator.first.fill(credential.password)
+
+                submit_locator = page.locator(submit_selector)
+                if await submit_locator.count() > 0:
+                    try:
+                        await submit_locator.first.click(timeout=5000)
+                    except Exception:
+                        await submit_locator.first.click(timeout=5000, force=True)
+                else:
+                    await pass_locator.first.press("Enter")
+
+                return True, f"{username_selector} + {password_selector} -> {submit_selector}"
+            except Exception:
+                continue
+
+        return False, "no supported linux.do login form selectors matched"
+
+    async def _open_linuxdo_auth_entry(self, page) -> tuple[bool, str]:
+        entry_urls = [
+            f"{BASE_URL}/auth/login",
+            f"{BASE_URL}/login",
+            f"{BASE_URL}/",
+        ]
+        for entry_url in entry_urls:
+            try:
+                await page.goto(entry_url, wait_until="domcontentloaded", timeout=20000)
+            except Exception:
+                continue
+
+            challenge_solve_attempted = False
+            for _ in range(10):
+                current_url = page.url.lower()
+                if (
+                    "connect.linux.do" in current_url
+                    or "/oauth2/authorize" in current_url
+                    or "linux.do/login" in current_url
+                ):
+                    return True, f"direct:{entry_url}"
+
+                if await self._is_cf_challenge_page(page):
+                    if not challenge_solve_attempted:
+                        challenge_solve_attempted = True
+                        solved = await self._solve_cf_interstitial(page)
+                        if solved:
+                            await page.wait_for_timeout(2000)
+                            continue
+                    await page.wait_for_timeout(2000)
+                    continue
+
+                clicked, used_selector = await self._click_first(page, LOGIN_BUTTON_SELECTORS)
+                if clicked:
+                    await page.wait_for_timeout(800)
+                    return True, used_selector
+
+                await page.wait_for_timeout(800)
+
+        return False, ""
+
     async def _login_and_get_sid(self, credential: LinuxDoCredential) -> tuple[str, str]:
         """Login via LinuxDo in browser and return sid (with cache restore/save)."""
-        username_hash = hashlib.sha256(credential.username.encode("utf-8")).hexdigest()[:8]
-        cache_file_path = os.path.join(self.storage_state_dir, f"qaq_al_{username_hash}_storage_state.json")
+        cache_file_path = self._get_storage_state_path(credential)
         storage_state = cache_file_path if os.path.exists(cache_file_path) else None
 
         print(f"  {self.account_name}: trying LinuxDo login (cache={'hit' if storage_state else 'miss'})")
@@ -386,16 +576,25 @@ class CheckIn:
                     return sid, "session restored from cache"
 
                 # Need fresh LinuxDo login.
-                await page.goto(f"{BASE_URL}/login", wait_until="domcontentloaded")
-                await page.wait_for_timeout(1200)
-                clicked, used_selector = await self._click_first(page, LOGIN_BUTTON_SELECTORS)
+                clicked, used_selector = await self._open_linuxdo_auth_entry(page)
                 if not clicked:
-                    return "", "linuxdo login button not found on qaq login page"
+                    title = ""
+                    try:
+                        title = await page.title()
+                    except Exception:
+                        pass
+                    challenge = await self._is_cf_challenge_page(page)
+                    return (
+                        "",
+                        f"linuxdo auth entry not found on qaq page (url={page.url}, title={title}, cf_challenge={challenge})",
+                    )
 
                 login_submitted = False
                 approve_clicked = False
+                login_submit_attempts = 0
+                last_login_attempt_loop = -999
 
-                for _ in range(160):
+                for loop_idx in range(220):
                     sid = await self._extract_sid_from_context(context)
                     if sid and await self._is_qaq_logged_in(page):
                         await context.storage_state(path=cache_file_path)
@@ -413,14 +612,19 @@ class CheckIn:
                         continue
 
                     url = page.url.lower()
-                    if "linux.do/login" in url and not login_submitted:
-                        try:
-                            await page.fill("#login-account-name", credential.username)
-                            await page.fill("#login-account-password", credential.password)
-                            await page.click("#login-button")
+                    should_retry_login = (loop_idx - last_login_attempt_loop) >= 40
+                    if "linux.do/login" in url and (not login_submitted or should_retry_login):
+                        submitted, submit_message = await self._submit_linuxdo_login(page, credential)
+                        if submitted:
+                            login_submit_attempts += 1
+                            last_login_attempt_loop = loop_idx
                             login_submitted = True
-                        except Exception:
-                            pass
+                            print(
+                                f"  {self.account_name}: linux.do credential submitted "
+                                f"(attempt={login_submit_attempts}, form={submit_message})"
+                            )
+                        elif not login_submitted:
+                            print(f"  {self.account_name}: linux.do form not ready ({submit_message})")
 
                     if "connect.linux.do" in url:
                         try:
@@ -433,7 +637,7 @@ class CheckIn:
 
                     await page.wait_for_timeout(1200)
 
-                return "", f"linuxdo login timeout (url={page.url})"
+                return "", f"linuxdo login timeout (url={page.url}, submit_attempts={login_submit_attempts})"
             finally:
                 await page.close()
                 await context.close()
@@ -454,6 +658,11 @@ class CheckIn:
         """
         print(f"\n🚀 start account {self.account_name}")
         errors: list[str] = []
+        cache_key = self._build_sid_cache_key(credential)
+        cached_sid = self._read_cached_sid(cache_key)
+        storage_state_sid = self._read_sid_from_storage_state(credential)
+        direct_sid = str(sid or "").strip()
+        sid_fallback = direct_sid or cached_sid or storage_state_sid
 
         if credential:
             refreshed_sid, login_msg = await self._login_and_get_sid(credential)
@@ -462,6 +671,7 @@ class CheckIn:
                 if ok:
                     result["sid_refreshed"] = (not sid) or (sid != refreshed_sid)
                     result["login_message"] = login_msg
+                    self._save_cached_sid(cache_key, refreshed_sid)
                     return True, result
                 errors.append(f"linuxdo auth failed: {result.get('error', 'unknown')}")
             else:
@@ -469,11 +679,18 @@ class CheckIn:
         else:
             errors.append("linuxdo credential missing")
 
-        if sid:
-            ok, result = await self._execute_with_sid(sid, tier, auth_source="sid_fallback")
+        if sid_fallback:
+            if direct_sid:
+                auth_source = "sid_fallback"
+            elif cached_sid:
+                auth_source = "sid_cache_fallback"
+            else:
+                auth_source = "sid_storage_state_fallback"
+            ok, result = await self._execute_with_sid(sid_fallback, tier, auth_source=auth_source)
             if ok:
+                self._save_cached_sid(cache_key, sid_fallback)
                 return True, result
-            errors.append(f"sid fallback failed: {result.get('error', 'unknown')}")
+            errors.append(f"{auth_source} failed: {result.get('error', 'unknown')}")
         else:
             errors.append("sid missing")
 

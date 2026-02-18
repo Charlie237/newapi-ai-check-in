@@ -1,0 +1,86 @@
+name: check accounts encoding
+
+on:
+  workflow_dispatch:
+    inputs:
+      accounts:
+        description: "Optional ACCOUNTS JSON. Empty uses secrets.ACCOUNTS."
+        required: false
+        type: string
+        default: ""
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/checkin-accounts-encoding.yml"
+
+jobs:
+  validate-accounts:
+    runs-on: windows-2025
+    environment: production
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+      ACCOUNTS: ${{ inputs.accounts || secrets.ACCOUNTS }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate account names encoding
+        shell: pwsh
+        run: |
+          $utf8 = [System.Text.UTF8Encoding]::new($false)
+          [Console]::InputEncoding = $utf8
+          [Console]::OutputEncoding = $utf8
+          $OutputEncoding = $utf8
+          chcp 65001 > $null
+
+          @'
+          import json
+          import os
+          import sys
+
+          raw = (os.getenv("ACCOUNTS") or "").strip().lstrip("\ufeff")
+          if not raw:
+              print("ERROR: ACCOUNTS is empty")
+              sys.exit(1)
+
+          def strip_code_fence(text: str) -> str:
+              text = text.strip()
+              if not text.startswith("```"):
+                  return text
+              lines = text.splitlines()
+              if len(lines) >= 2 and lines[0].startswith("```") and lines[-1].strip() == "```":
+                  return "\n".join(lines[1:-1]).strip()
+              return text
+
+          try:
+              parsed = json.loads(strip_code_fence(raw))
+          except Exception as exc:
+              print(f"ERROR: ACCOUNTS JSON parse failed: {exc}")
+              sys.exit(1)
+
+          if not isinstance(parsed, list):
+              print("ERROR: ACCOUNTS must be a JSON array")
+              sys.exit(1)
+
+          print(f"accounts_total: {len(parsed)}")
+          qmark_hits = 0
+          for idx, item in enumerate(parsed, 1):
+              if not isinstance(item, dict):
+                  print(f"[{idx}] <invalid item: expected object>")
+                  continue
+              name = str(item.get("name") or f"account_{idx}")
+              has_qmark = "?" in name
+              if has_qmark:
+                  qmark_hits += 1
+              flag = "  <-- contains '?'" if has_qmark else ""
+              print(f"[{idx}] {name}{flag}")
+
+          if qmark_hits:
+              print(f"FAIL: found {qmark_hits} account name(s) containing '?'")
+              sys.exit(2)
+
+          print("OK: no '?' found in account names")
+          '@ | python -

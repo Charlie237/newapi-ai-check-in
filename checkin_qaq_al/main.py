@@ -4,7 +4,7 @@ qaq.al auto check-in entrypoint.
 
 Authentication strategy per account:
 1) LinuxDo login + cached storage-state fallback
-2) sid fallback (if provided)
+2) sid fallback (if provided or cached)
 """
 
 from __future__ import annotations
@@ -25,9 +25,11 @@ from checkin import CheckIn, LinuxDoCredential
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.balance_hash import load_balance_hash, save_balance_hash
+from utils.encoding import ensure_utf8_stdio
 from utils.notify import notify
 
-load_dotenv(override=True)
+ensure_utf8_stdio()
+load_dotenv(override=True, encoding="utf-8")
 
 CHECKIN_HASH_FILE = "balance_hash_qaq_al.txt"
 
