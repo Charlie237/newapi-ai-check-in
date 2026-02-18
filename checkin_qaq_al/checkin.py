@@ -415,13 +415,26 @@ class CheckIn:
     async def _is_cf_challenge_page(self, page) -> bool:
         try:
             url = page.url.lower()
-            if "__cf_chl_rt_tk" in url or "linux.do/challenge" in url:
+            if (
+                "__cf_chl_rt_tk" in url
+                or "__cf_chl_" in url
+                or "/cdn-cgi/challenge-platform" in url
+                or "/cdn-cgi/challenge" in url
+                or "linux.do/challenge" in url
+            ):
                 return True
             title = (await page.title()).lower()
-            if "just a moment" in title or "attention required" in title:
+            if "just a moment" in title or "attention required" in title or "security check" in title:
                 return True
             content = (await page.content()).lower()
-            return "checking your browser before accessing" in content
+            challenge_markers = (
+                "checking your browser before accessing",
+                "enable javascript and cookies to continue",
+                "challenge-platform",
+                "cf-challenge",
+                "challenge-form",
+            )
+            return any(marker in content for marker in challenge_markers)
         except Exception:
             return False
 
@@ -448,7 +461,11 @@ class CheckIn:
                 locator = page.locator(selector)
                 if await locator.count() == 0:
                     continue
-                await locator.first.click(timeout=5000)
+                target = locator.first
+                try:
+                    await target.click(timeout=5000)
+                except Exception:
+                    await target.click(timeout=5000, force=True)
                 return True, selector
             except Exception:
                 continue
@@ -466,16 +483,25 @@ class CheckIn:
             except Exception:
                 continue
 
+            challenge_solve_attempted = False
             for _ in range(10):
                 current_url = page.url.lower()
-                if "connect.linux.do" in current_url or "/oauth2/authorize" in current_url:
+                if (
+                    "connect.linux.do" in current_url
+                    or "/oauth2/authorize" in current_url
+                    or "linux.do/login" in current_url
+                ):
                     return True, f"direct:{entry_url}"
 
                 if await self._is_cf_challenge_page(page):
-                    solved = await self._solve_cf_interstitial(page)
-                    if solved:
-                        await page.wait_for_timeout(1600)
-                        continue
+                    if not challenge_solve_attempted:
+                        challenge_solve_attempted = True
+                        solved = await self._solve_cf_interstitial(page)
+                        if solved:
+                            await page.wait_for_timeout(2000)
+                            continue
+                    await page.wait_for_timeout(2000)
+                    continue
 
                 clicked, used_selector = await self._click_first(page, LOGIN_BUTTON_SELECTORS)
                 if clicked:
@@ -517,7 +543,16 @@ class CheckIn:
                 # Need fresh LinuxDo login.
                 clicked, used_selector = await self._open_linuxdo_auth_entry(page)
                 if not clicked:
-                    return "", f"linuxdo auth entry not found on qaq page (url={page.url})"
+                    title = ""
+                    try:
+                        title = await page.title()
+                    except Exception:
+                        pass
+                    challenge = await self._is_cf_challenge_page(page)
+                    return (
+                        "",
+                        f"linuxdo auth entry not found on qaq page (url={page.url}, title={title}, cf_challenge={challenge})",
+                    )
 
                 login_submitted = False
                 approve_clicked = False
