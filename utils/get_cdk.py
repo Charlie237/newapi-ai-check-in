@@ -382,8 +382,13 @@ async def get_runawaytime_cdk(
                 timeout=30,
             )
 
-            already_checked_in = False
-            if status_response.status_code == 200:
+            # 临时注释：get_cdk 内签到暂不使用，签到由通用接口处理。
+            # 如需恢复旧逻辑，可在账号配置中设置 runaway_enable_fuli_checkin=true。
+            enable_fuli_checkin = bool(account_config.get("runaway_enable_fuli_checkin", False))
+            already_checked_in = not enable_fuli_checkin
+            if not enable_fuli_checkin:
+                print(f"ℹ️ {account_name}: skip fuli check-in in get_cdk (handled by provider check-in)")
+            if enable_fuli_checkin and status_response.status_code == 200:
                 status_data = response_resolve(status_response, "get_checkin_status", account_name)
                 if status_data and status_data.get("checked"):
                     print(f"✅ {account_name}: Already checked in today")
