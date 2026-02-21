@@ -107,19 +107,25 @@ class LinuxDoSignIn:
                             print(f"ℹ️ {self.account_name}: Checking login status at {oauth_url}")
                             # 直接访问授权页面检查是否已登录
                             response = await page.goto(oauth_url, wait_until="domcontentloaded")
+                            current_url = page.url
                             print(
                                 f"ℹ️ {self.account_name}: redirected to app page {response.url if response else 'N/A'}"
                             )
+                            print(f"ℹ️ {self.account_name}: current page after cache restore: {current_url}")
                             await save_page_content_to_file(page, "sign_in_check", self.account_name, prefix="linuxdo")
 
                             # 登录后可能直接跳转回应用页面
-                            if response and response.url.startswith(self.provider_config.origin):
+                            if current_url.startswith(self.provider_config.origin) or "code=" in current_url:
                                 is_logged_in = True
                                 print(
                                     f"✅ {self.account_name}: Already logged in via cache, proceeding to authorization"
                                 )
                             else:
-                                # 检查是否出现授权按钮（表示已登录）
+                                # 授权按钮有时异步渲染，短暂等待后再判断，避免误判缓存失效
+                                try:
+                                    await page.wait_for_selector('a[href^="/oauth2/approve"]', timeout=8000)
+                                except Exception:
+                                    pass
                                 allow_btn = await page.query_selector('a[href^="/oauth2/approve"]')
                                 if allow_btn:
                                     is_logged_in = True
@@ -334,6 +340,14 @@ class LinuxDoSignIn:
                                 f"ℹ️ {self.account_name}: Browser headers not returned (no Cloudflare challenge detected)"
                             )
 
+                        # 即使本次走的是“缓存已登录”分支，也刷新缓存，避免下一次继续使用旧会话。
+                        if cache_file_path:
+                            try:
+                                await context.storage_state(path=cache_file_path)
+                                print(f"ℹ️ {self.account_name}: Storage state cache refreshed")
+                            except Exception as cache_save_err:
+                                print(f"⚠️ {self.account_name}: Failed to refresh storage state cache: {cache_save_err}")
+
                         return True, result, browser_headers
                     else:
                         print(f"⚠️ {self.account_name}: OAuth callback received but no user ID found")
@@ -356,6 +370,15 @@ class LinuxDoSignIn:
                                 print(
                                     f"ℹ️ {self.account_name}: Browser headers not returned (no Cloudflare challenge detected)"
                                 )
+
+                            if cache_file_path:
+                                try:
+                                    await context.storage_state(path=cache_file_path)
+                                    print(f"ℹ️ {self.account_name}: Storage state cache refreshed")
+                                except Exception as cache_save_err:
+                                    print(
+                                        f"⚠️ {self.account_name}: Failed to refresh storage state cache: {cache_save_err}"
+                                    )
                             return True, query_params, browser_headers
                         else:
                             print(f"❌ {self.account_name}: OAuth failed, no code in callback")
