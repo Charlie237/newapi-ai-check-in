@@ -401,7 +401,12 @@ class CheckIn:
                             "error": f"{provider} OAuth is not enabled.",
                         }
 
-                    client_id = status_data.get(f"{provider}_client_id", "")
+                    client_id = str(status_data.get(f"{provider}_client_id", "")).strip()
+                    if not client_id:
+                        return {
+                            "success": False,
+                            "error": f"{provider} client_id is empty in status response.",
+                        }
                     return {
                         "success": True,
                         "client_id": client_id,
@@ -1395,6 +1400,7 @@ class CheckIn:
         password: str,
         bypass_cookies: dict,
         common_headers: dict,
+        oauth_retry: int = 0,
     ) -> tuple[bool, dict]:
         """使用 Linux.do 账号执行签到操作
 
@@ -1426,17 +1432,26 @@ class CheckIn:
             headers["Origin"] = self.provider_config.origin
 
             # 获取 OAuth 客户端 ID
-            # 优先使用 provider_config 中的 client_id
-            if self.provider_config.linuxdo_client_id:
+            # 仅从 provider 配置读取，不做动态获取
+            client_id = str(self.provider_config.linuxdo_client_id or "").strip()
+            if client_id:
                 client_id_result = {
                     "success": True,
-                    "client_id": self.provider_config.linuxdo_client_id,
+                    "client_id": client_id,
                 }
                 print(f"ℹ️ {self.account_name}: Using Linux.do client ID from config")
             else:
                 client_id_result = await self.get_auth_client_id(session, headers, "linuxdo")
                 if client_id_result and client_id_result.get("success"):
-                    print(f"ℹ️ {self.account_name}: Got client ID for Linux.do: {client_id_result['client_id']}")
+                    dynamic_client_id = str(client_id_result.get("client_id", "")).strip()
+                    if not dynamic_client_id:
+                        print(f"❌ {self.account_name}: Linux.do client_id is empty from status API")
+                        return False, {"error": "Failed to get Linux.do client ID"}
+                    client_id_result = {
+                        "success": True,
+                        "client_id": dynamic_client_id,
+                    }
+                    print(f"ℹ️ {self.account_name}: Got client ID for Linux.do: {dynamic_client_id}")
                 else:
                     error_msg = client_id_result.get("error", "Unknown error")
                     print(f"❌ {self.account_name}: {error_msg}")
@@ -1467,12 +1482,52 @@ class CheckIn:
                 password=password,
             )
 
+            browser_auth_cookies = list(auth_state_result.get("cookies", []))
+            if bypass_cookies:
+                provider_domain = urlparse(self.provider_config.origin).netloc
+                secure_default = self.provider_config.origin.startswith("https://")
+                existing_cookie_names = {
+                    cookie.get("name") for cookie in browser_auth_cookies if cookie.get("name")
+                }
+                for cookie_name, cookie_value in bypass_cookies.items():
+                    if not cookie_name or cookie_value is None or cookie_name in existing_cookie_names:
+                        continue
+                    browser_auth_cookies.append(
+                        {
+                            "name": cookie_name,
+                            "value": str(cookie_value),
+                            "domain": provider_domain,
+                            "path": "/",
+                            "secure": secure_default,
+                            "httpOnly": False,
+                            "sameSite": "Lax",
+                        }
+                    )
+                    existing_cookie_names.add(cookie_name)
+
             success, result_data, oauth_browser_headers = await linuxdo.signin(
                 client_id=client_id_result["client_id"],
                 auth_state=auth_state_result["state"],
-                auth_cookies=auth_state_result.get("cookies", []),
+                auth_cookies=browser_auth_cookies,
                 cache_file_path=cache_file_path
             )
+
+            error_text = ""
+            if isinstance(result_data, dict):
+                error_text = str(result_data.get("error", ""))
+            retryable_oauth_error = ("no code in callback" in error_text.lower()) or ("expired=true" in error_text.lower())
+            if (not success) and oauth_retry < 1 and retryable_oauth_error:
+                print(
+                    f"⚠️ {self.account_name}: Linux.do OAuth callback lost "
+                    f"(retry={oauth_retry + 1}/1), restarting Linux.do flow once"
+                )
+                return await self.check_in_with_linuxdo(
+                    username=username,
+                    password=password,
+                    bypass_cookies=bypass_cookies,
+                    common_headers=common_headers,
+                    oauth_retry=oauth_retry + 1,
+                )
 
             # 检查是否成功获取 cookies 和 api_user
             if success and "cookies" in result_data and "api_user" in result_data:

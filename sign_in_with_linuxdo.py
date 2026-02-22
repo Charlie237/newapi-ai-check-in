@@ -89,6 +89,38 @@ class LinuxDoSignIn:
                 print(f"ℹ️ {self.account_name}: No auth cookies to set")
 
             page = await context.new_page()
+            captured_oauth_query_params = {}
+
+            def _capture_oauth_query_params(target_url: str) -> None:
+                nonlocal captured_oauth_query_params
+                if not target_url or "code=" not in target_url:
+                    return
+                if not target_url.startswith(self.provider_config.origin):
+                    return
+                try:
+                    parsed = urlparse(target_url)
+                    params = parse_qs(parsed.query)
+                    if "code" in params and "state" in params:
+                        captured_oauth_query_params = params
+                        print(
+                            f"ℹ️ {self.account_name}: Captured OAuth callback URL "
+                            f"({parsed.path or '/'})"
+                        )
+                except Exception:
+                    pass
+
+            def _on_request(request) -> None:
+                _capture_oauth_query_params(request.url)
+
+            def _on_frame_navigated(frame) -> None:
+                try:
+                    if frame == page.main_frame:
+                        _capture_oauth_query_params(frame.url)
+                except Exception:
+                    pass
+
+            page.on("request", _on_request)
+            page.on("framenavigated", _on_frame_navigated)
 
             async with ClickSolver(
                 framework=FrameworkType.CAMOUFOX, page=page, max_attempts=5, attempt_delay=3
@@ -266,10 +298,38 @@ class LinuxDoSignIn:
                             print(f"ℹ️ {self.account_name}: Already redirected to /console/token, skipping redirect_pattern wait")
                         except Exception:
                             # 未跳转到 /console/token，使用配置的 redirect_pattern 等待
-                            redirect_pattern = self.provider_config.get_linuxdo_auth_redirect_pattern()
-                            print(f"ℹ️ {self.account_name}: Waiting for redirect to: {redirect_pattern}")
-                            await page.wait_for_url(redirect_pattern, timeout=30000)
-                            await page.wait_for_timeout(5000)
+                            try:
+                                await page.wait_for_url(
+                                    lambda url: str(url).startswith(self.provider_config.origin) and "code=" in str(url),
+                                    timeout=12000,
+                                )
+                                _capture_oauth_query_params(page.url)
+                                print(f"ℹ️ {self.account_name}: Callback URL with OAuth code detected")
+                            except Exception:
+                                redirect_patterns = [
+                                    self.provider_config.get_linuxdo_auth_redirect_pattern(),
+                                    f"**{self.provider_config.origin}/oauth-redirect.html**",
+                                    f"**{self.provider_config.origin}/oauth/**",
+                                ]
+                                matched_redirect = False
+                                tried_patterns = set()
+                                for redirect_pattern in redirect_patterns:
+                                    if redirect_pattern in tried_patterns:
+                                        continue
+                                    tried_patterns.add(redirect_pattern)
+                                    try:
+                                        print(f"ℹ️ {self.account_name}: Waiting for redirect to: {redirect_pattern}")
+                                        await page.wait_for_url(redirect_pattern, timeout=10000)
+                                        _capture_oauth_query_params(page.url)
+                                        matched_redirect = True
+                                        break
+                                    except Exception:
+                                        continue
+
+                                if not matched_redirect:
+                                    raise TimeoutError("No expected OAuth redirect URL matched")
+
+                            await page.wait_for_timeout(2000)
 
                         # 检查是否在 Cloudflare 验证页面
                         page_title = await page.title()
@@ -352,8 +412,12 @@ class LinuxDoSignIn:
                     else:
                         print(f"⚠️ {self.account_name}: OAuth callback received but no user ID found")
                         await take_screenshot(page, "oauth_failed_no_user_id_bypass", self.account_name)
+                        _capture_oauth_query_params(page.url)
                         parsed_url = urlparse(page.url)
                         query_params = parse_qs(parsed_url.query)
+                        if "code" not in query_params and "code" in captured_oauth_query_params:
+                            query_params = captured_oauth_query_params
+                            print(f"ℹ️ {self.account_name}: Using captured OAuth callback params from transient redirect")
 
                         # 如果 query 中包含 code，说明 OAuth 回调成功
                         if "code" in query_params:
@@ -381,11 +445,15 @@ class LinuxDoSignIn:
                                     )
                             return True, query_params, browser_headers
                         else:
-                            print(f"❌ {self.account_name}: OAuth failed, no code in callback")
+                            current_page = page.url
+                            print(
+                                f"❌ {self.account_name}: OAuth failed, no code in callback "
+                                f"(current page: {current_page})"
+                            )
                             return (
                                 False,
                                 {
-                                    "error": "Linux.do OAuth failed - no code in callback",
+                                    "error": f"Linux.do OAuth failed - no code in callback (url: {current_page})",
                                 },
                                 None,
                             )
