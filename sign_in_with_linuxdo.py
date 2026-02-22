@@ -381,11 +381,15 @@ class LinuxDoSignIn:
                                     )
                             return True, query_params, browser_headers
                         else:
-                            print(f"❌ {self.account_name}: OAuth failed, no code in callback")
+                            current_page = page.url
+                            print(
+                                f"❌ {self.account_name}: OAuth failed, no code in callback "
+                                f"(current page: {current_page})"
+                            )
                             return (
                                 False,
                                 {
-                                    "error": "Linux.do OAuth failed - no code in callback",
+                                    "error": f"Linux.do OAuth failed - no code in callback (url: {current_page})",
                                 },
                                 None,
                             )

@@ -1395,6 +1395,7 @@ class CheckIn:
         password: str,
         bypass_cookies: dict,
         common_headers: dict,
+        oauth_retry: int = 0,
     ) -> tuple[bool, dict]:
         """使用 Linux.do 账号执行签到操作
 
@@ -1467,12 +1468,52 @@ class CheckIn:
                 password=password,
             )
 
+            browser_auth_cookies = list(auth_state_result.get("cookies", []))
+            if bypass_cookies:
+                provider_domain = urlparse(self.provider_config.origin).netloc
+                secure_default = self.provider_config.origin.startswith("https://")
+                existing_cookie_names = {
+                    cookie.get("name") for cookie in browser_auth_cookies if cookie.get("name")
+                }
+                for cookie_name, cookie_value in bypass_cookies.items():
+                    if not cookie_name or cookie_value is None or cookie_name in existing_cookie_names:
+                        continue
+                    browser_auth_cookies.append(
+                        {
+                            "name": cookie_name,
+                            "value": str(cookie_value),
+                            "domain": provider_domain,
+                            "path": "/",
+                            "secure": secure_default,
+                            "httpOnly": False,
+                            "sameSite": "Lax",
+                        }
+                    )
+                    existing_cookie_names.add(cookie_name)
+
             success, result_data, oauth_browser_headers = await linuxdo.signin(
                 client_id=client_id_result["client_id"],
                 auth_state=auth_state_result["state"],
-                auth_cookies=auth_state_result.get("cookies", []),
+                auth_cookies=browser_auth_cookies,
                 cache_file_path=cache_file_path
             )
+
+            error_text = ""
+            if isinstance(result_data, dict):
+                error_text = str(result_data.get("error", ""))
+            retryable_oauth_error = ("no code in callback" in error_text.lower()) or ("expired=true" in error_text.lower())
+            if (not success) and oauth_retry < 1 and retryable_oauth_error:
+                print(
+                    f"⚠️ {self.account_name}: Linux.do OAuth callback lost "
+                    f"(retry={oauth_retry + 1}/1), restarting Linux.do flow once"
+                )
+                return await self.check_in_with_linuxdo(
+                    username=username,
+                    password=password,
+                    bypass_cookies=bypass_cookies,
+                    common_headers=common_headers,
+                    oauth_retry=oauth_retry + 1,
+                )
 
             # 检查是否成功获取 cookies 和 api_user
             if success and "cookies" in result_data and "api_user" in result_data:
