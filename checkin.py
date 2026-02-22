@@ -401,7 +401,12 @@ class CheckIn:
                             "error": f"{provider} OAuth is not enabled.",
                         }
 
-                    client_id = status_data.get(f"{provider}_client_id", "")
+                    client_id = str(status_data.get(f"{provider}_client_id", "")).strip()
+                    if not client_id:
+                        return {
+                            "success": False,
+                            "error": f"{provider} client_id is empty in status response.",
+                        }
                     return {
                         "success": True,
                         "client_id": client_id,
@@ -1427,8 +1432,15 @@ class CheckIn:
             headers["Origin"] = self.provider_config.origin
 
             # 获取 OAuth 客户端 ID
-            # 优先使用 provider_config 中的 client_id
-            if self.provider_config.linuxdo_client_id:
+            # AnyRouter 固定使用给定 client_id，避免动态获取引入不确定性
+            if self.provider_config.name == "anyrouter":
+                fixed_anyrouter_client_id = "8w2uZtoWH9AUXrZr1qeCEEmvXLafea3c"
+                client_id_result = {
+                    "success": True,
+                    "client_id": fixed_anyrouter_client_id,
+                }
+                print(f"ℹ️ {self.account_name}: Using fixed Linux.do client ID for AnyRouter")
+            elif self.provider_config.linuxdo_client_id:
                 client_id_result = {
                     "success": True,
                     "client_id": self.provider_config.linuxdo_client_id,
