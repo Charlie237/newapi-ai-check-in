@@ -1432,28 +1432,17 @@ class CheckIn:
             headers["Origin"] = self.provider_config.origin
 
             # 获取 OAuth 客户端 ID
-            # AnyRouter 固定使用给定 client_id，避免动态获取引入不确定性
-            if self.provider_config.name == "anyrouter":
-                fixed_anyrouter_client_id = "8w2uZtoWH9AUXrZr1qeCEEmvXLafea3c"
-                client_id_result = {
-                    "success": True,
-                    "client_id": fixed_anyrouter_client_id,
-                }
-                print(f"ℹ️ {self.account_name}: Using fixed Linux.do client ID for AnyRouter")
-            elif self.provider_config.linuxdo_client_id:
-                client_id_result = {
-                    "success": True,
-                    "client_id": self.provider_config.linuxdo_client_id,
-                }
-                print(f"ℹ️ {self.account_name}: Using Linux.do client ID from config")
-            else:
-                client_id_result = await self.get_auth_client_id(session, headers, "linuxdo")
-                if client_id_result and client_id_result.get("success"):
-                    print(f"ℹ️ {self.account_name}: Got client ID for Linux.do: {client_id_result['client_id']}")
-                else:
-                    error_msg = client_id_result.get("error", "Unknown error")
-                    print(f"❌ {self.account_name}: {error_msg}")
-                    return False, {"error": "Failed to get Linux.do client ID"}
+            # 仅从 provider 配置读取，不做动态获取
+            client_id = str(self.provider_config.linuxdo_client_id or "").strip()
+            if not client_id:
+                print(f"❌ {self.account_name}: linuxdo_client_id is not configured in provider config")
+                return False, {"error": "Failed to get Linux.do client ID from provider config"}
+
+            client_id_result = {
+                "success": True,
+                "client_id": client_id,
+            }
+            print(f"ℹ️ {self.account_name}: Using Linux.do client ID from config")
 
             # 获取 OAuth 认证状态
             auth_state_result = await self.get_auth_state(
