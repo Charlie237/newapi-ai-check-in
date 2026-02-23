@@ -1049,7 +1049,10 @@ class CheckIn:
             )
             cached_cookies = cached_auth.get('cookies', {})
             cached_api_user = cached_auth.get('api_user')
-            merged_cookies = {**bypass_cookies, **cached_cookies}
+            # Keep fresh bypass/WAF cookies from current run authoritative.
+            # Old cached anti-bot cookies (e.g. acw_tc/cdn_sec_tc) can expire quickly
+            # and would otherwise overwrite fresh values, causing false cache "stale".
+            merged_cookies = {**cached_cookies, **bypass_cookies}
             success, user_info = await self.check_in_with_cookies(
                 merged_cookies,
                 common_headers,
