@@ -5,13 +5,15 @@
 
 import json
 import os
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
+
 from camoufox.async_api import AsyncCamoufox
 from playwright_captcha import CaptchaType, ClickSolver, FrameworkType
-from utils.browser_utils import filter_cookies, take_screenshot, save_page_content_to_file
+
+from utils.browser_utils import filter_cookies, save_page_content_to_file, take_screenshot
 from utils.config import ProviderConfig
-from utils.wait_for_secrets import WaitForSecrets
 from utils.get_headers import get_browser_headers, print_browser_headers
+from utils.wait_for_secrets import WaitForSecrets
 
 
 class GitHubSignIn:
@@ -98,9 +100,11 @@ class GitHubSignIn:
                 try:
                     # 检查是否已经登录（通过缓存恢复）
                     is_logged_in = False
+                    has_cache_file = bool(cache_file_path and os.path.exists(cache_file_path))
+                    cache_status = "stale" if has_cache_file else "miss"
                     oauth_url = f"https://github.com/login/oauth/authorize?response_type=code&client_id={client_id}&state={auth_state}&scope=user:email"
 
-                    if os.path.exists(cache_file_path):
+                    if has_cache_file:
                         try:
                             print(f"ℹ️ {self.account_name}: Checking login status at {oauth_url}")
                             # 直接访问授权页面检查是否已登录
@@ -113,6 +117,7 @@ class GitHubSignIn:
                             # 登录后可能直接跳转回应用页面
                             if response and response.url.startswith(self.provider_config.origin):
                                 is_logged_in = True
+                                cache_status = "hit"
                                 print(
                                     f"✅ {self.account_name}: Already logged in via cache, proceeding to authorization"
                                 )
@@ -121,6 +126,7 @@ class GitHubSignIn:
                                 authorize_btn = await page.query_selector('button[type="submit"]')
                                 if authorize_btn:
                                     is_logged_in = True
+                                    cache_status = "hit"
                                     print(
                                         f"✅ {self.account_name}: Already logged in via cache, proceeding to authorization"
                                     )
@@ -245,7 +251,7 @@ class GitHubSignIn:
                         except Exception as e:
                             print(f"❌ {self.account_name}: Error occurred while signing in GitHub: {e}")
                             await take_screenshot(page, "github_signin_error", self.account_name)
-                            return False, {"error": "GitHub sign-in error"}, None
+                            return False, {"error": "GitHub sign-in error", "cache_status": cache_status}, None
 
                         # 登录后访问授权页面
                         try:
@@ -339,6 +345,7 @@ class GitHubSignIn:
                         user_cookies = filter_cookies(cookies, self.provider_config.origin)
 
                         result = {"cookies": user_cookies, "api_user": api_user}
+                        result["cache_status"] = cache_status
 
                         # 只有当检测到 Cloudflare 验证页面时，才获取并返回浏览器指纹头部信息
                         browser_headers = None
@@ -376,6 +383,7 @@ class GitHubSignIn:
                                 print(
                                     f"ℹ️ {self.account_name}: Browser headers not returned (no Cloudflare challenge detected)"
                                 )
+                            query_params["cache_status"] = [cache_status]
                             return True, query_params, browser_headers
                         else:
                             print(f"❌ {self.account_name}: OAuth failed, no code in callback")
@@ -383,6 +391,7 @@ class GitHubSignIn:
                                 False,
                                 {
                                     "error": "GitHub OAuth failed - no code in callback",
+                                    "cache_status": cache_status,
                                 },
                                 None,
                             )
@@ -390,7 +399,7 @@ class GitHubSignIn:
                 except Exception as e:
                     print(f"❌ {self.account_name}: Error occurred while processing GitHub page: {e}")
                     await take_screenshot(page, "github_page_navigation_error", self.account_name)
-                    return False, {"error": "GitHub page navigation error"}, None
+                    return False, {"error": "GitHub page navigation error", "cache_status": cache_status}, None
                 finally:
                     await page.close()
                     await context.close()

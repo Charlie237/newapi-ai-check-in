@@ -4,23 +4,25 @@ CheckIn 类
 """
 
 import asyncio
-import json
-import inspect
 import hashlib
+import inspect
+import json
 import os
 import tempfile
 from datetime import datetime
-from urllib.parse import urlparse, urlencode
+from urllib.parse import urlencode, urlparse
 
-from curl_cffi import requests as curl_requests
 from camoufox.async_api import AsyncCamoufox
+from curl_cffi import requests as curl_requests
+
+from utils.browser_utils import aliyun_captcha_check, get_random_user_agent, parse_cookies, take_screenshot
 from utils.config import AccountConfig, ProviderConfig
-from utils.browser_utils import parse_cookies, get_random_user_agent, take_screenshot, aliyun_captcha_check
 from utils.get_cf_clearance import get_cf_clearance
-from utils.http_utils import proxy_resolve, response_resolve
-from utils.topup import topup
 from utils.get_headers import get_curl_cffi_impersonate
+from utils.http_utils import proxy_resolve, response_resolve
 from utils.mask_utils import mask_username
+from utils.topup import topup
+
 
 class CheckIn:
     """newapi.ai 签到管理类"""
@@ -1039,6 +1041,7 @@ class CheckIn:
 
         cache_file_path = self._get_provider_cookie_cache_file_path(username)
         cached_auth = self._load_provider_cookie_cache(cache_file_path)
+        cache_status = "miss"
         if cached_auth:
             print(
                 f"ℹ️ {self.account_name}: Trying password-login cookie cache "
@@ -1055,8 +1058,11 @@ class CheckIn:
             )
             if success:
                 print(f'✅ {self.account_name}: Password-login cookie cache is valid')
+                user_info = user_info or {}
+                user_info["cache_status"] = "hit"
                 return True, user_info
             print(f'⚠️ {self.account_name}: Password-login cookie cache is invalid, fallback to password login')
+            cache_status = "stale"
 
         session = curl_requests.Session(impersonate=impersonate, proxy=self.http_proxy_config, timeout=30)
         try:
@@ -1093,11 +1099,12 @@ class CheckIn:
             if login_json is None:
                 return False, {
                     'error': 'Password login got non-JSON response (possibly WAF challenge)',
+                    'cache_status': cache_status,
                 }
 
             if not login_json.get('success'):
                 error_msg = login_json.get('message', 'Password login failed')
-                return False, {'error': error_msg}
+                return False, {'error': error_msg, 'cache_status': cache_status}
 
             login_data = login_json.get('data') or {}
             api_user = login_data.get('id')
@@ -1110,11 +1117,17 @@ class CheckIn:
                     api_user = (user_info_json.get('data') or {}).get('id')
 
             if not api_user:
-                return False, {'error': 'Password login succeeded but api_user was not found'}
+                return False, {
+                    'error': 'Password login succeeded but api_user was not found',
+                    'cache_status': cache_status,
+                }
 
             user_cookies = self._extract_provider_cookies(session)
             if not user_cookies:
-                return False, {'error': 'Password login succeeded but cookies are empty'}
+                return False, {
+                    'error': 'Password login succeeded but cookies are empty',
+                    'cache_status': cache_status,
+                }
 
             merged_cookies = {**bypass_cookies, **user_cookies}
             success, user_info = await self.check_in_with_cookies(
@@ -1125,11 +1138,13 @@ class CheckIn:
             )
             if success:
                 self._save_provider_cookie_cache(cache_file_path, user_cookies, api_user)
+            user_info = user_info or {}
+            user_info["cache_status"] = cache_status
             return success, user_info
 
         except Exception as e:
             print(f'❌ {self.account_name}: Error occurred during password login process - {e}')
-            return False, {'error': 'Password login process error'}
+            return False, {'error': 'Password login process error', 'cache_status': cache_status}
         finally:
             session.close()
 
@@ -1315,6 +1330,13 @@ class CheckIn:
                 auth_cookies=auth_state_result.get("cookies", []),
                 cache_file_path=cache_file_path
             )
+            cache_status = "miss"
+            if isinstance(result_data, dict):
+                cache_status_value = result_data.get("cache_status")
+                if isinstance(cache_status_value, list):
+                    cache_status_value = cache_status_value[0] if cache_status_value else None
+                if isinstance(cache_status_value, str) and cache_status_value:
+                    cache_status = cache_status_value
 
             # 检查是否成功获取 cookies 和 api_user
             if success and "cookies" in result_data and "api_user" in result_data:
@@ -1329,7 +1351,12 @@ class CheckIn:
                     updated_headers.update(oauth_browser_headers)
 
                 merged_cookies = {**bypass_cookies, **user_cookies}
-                return await self.check_in_with_cookies(merged_cookies, updated_headers, api_user, impersonate)
+                check_success, user_info = await self.check_in_with_cookies(
+                    merged_cookies, updated_headers, api_user, impersonate
+                )
+                if isinstance(user_info, dict):
+                    user_info["cache_status"] = cache_status
+                return check_success, user_info
             elif success and "code" in result_data and "state" in result_data:
                 # 收到 OAuth code，通过 HTTP 调用回调接口获取 api_user
                 print(f"ℹ️ {self.account_name}: Received OAuth code, calling callback API")
@@ -1370,7 +1397,12 @@ class CheckIn:
                                     f"ℹ️ {self.account_name}: Extracted {len(user_cookies)} user cookies: {list(user_cookies.keys())}"
                                 )
                                 merged_cookies = {**bypass_cookies, **user_cookies}
-                                return await self.check_in_with_cookies(merged_cookies, updated_headers, api_user, impersonate)
+                                check_success, user_info = await self.check_in_with_cookies(
+                                    merged_cookies, updated_headers, api_user, impersonate
+                                )
+                                if isinstance(user_info, dict):
+                                    user_info["cache_status"] = cache_status
+                                return check_success, user_info
                             else:
                                 print(f"❌ {self.account_name}: No user ID in callback response")
                                 return False, {"error": "No user ID in OAuth callback response"}
@@ -1511,6 +1543,13 @@ class CheckIn:
                 auth_cookies=browser_auth_cookies,
                 cache_file_path=cache_file_path
             )
+            cache_status = "miss"
+            if isinstance(result_data, dict):
+                cache_status_value = result_data.get("cache_status")
+                if isinstance(cache_status_value, list):
+                    cache_status_value = cache_status_value[0] if cache_status_value else None
+                if isinstance(cache_status_value, str) and cache_status_value:
+                    cache_status = cache_status_value
 
             error_text = ""
             if isinstance(result_data, dict):
@@ -1542,7 +1581,12 @@ class CheckIn:
                     updated_headers.update(oauth_browser_headers)
 
                 merged_cookies = {**bypass_cookies, **user_cookies}
-                return await self.check_in_with_cookies(merged_cookies, updated_headers, api_user, impersonate)
+                check_success, user_info = await self.check_in_with_cookies(
+                    merged_cookies, updated_headers, api_user, impersonate
+                )
+                if isinstance(user_info, dict):
+                    user_info["cache_status"] = cache_status
+                return check_success, user_info
             elif success and "code" in result_data and "state" in result_data:
                 # 收到 OAuth code，通过 HTTP 调用回调接口获取 api_user
                 print(f"ℹ️ {self.account_name}: Received OAuth code, calling callback API")
@@ -1583,7 +1627,12 @@ class CheckIn:
                                     f"ℹ️ {self.account_name}: Extracted {len(user_cookies)} user cookies: {list(user_cookies.keys())}"
                                 )
                                 merged_cookies = {**bypass_cookies, **user_cookies}
-                                return await self.check_in_with_cookies(merged_cookies, updated_headers, api_user, impersonate)
+                                check_success, user_info = await self.check_in_with_cookies(
+                                    merged_cookies, updated_headers, api_user, impersonate
+                                )
+                                if isinstance(user_info, dict):
+                                    user_info["cache_status"] = cache_status
+                                return check_success, user_info
                             else:
                                 print(f"❌ {self.account_name}: No user ID in callback response")
                                 return False, {"error": "No user ID in OAuth callback response"}
