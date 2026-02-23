@@ -85,6 +85,7 @@ jobs:
           ACCOUNTS_HYBGZS: ${{ secrets.ACCOUNTS_HYBGZS }}
           ACCOUNTS_LINUX_DO: ${{ secrets.ACCOUNTS_LINUX_DO }}
           DEBUG: ${{ github.event_name == 'workflow_dispatch' && inputs.debug || vars.DEBUG || 'false' }}
+          BALANCE_CHANGE_MODE: ${{ vars.BALANCE_CHANGE_MODE || 'strict' }}
           DINGDING_WEBHOOK: ${{ secrets.DINGDING_WEBHOOK }}
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}

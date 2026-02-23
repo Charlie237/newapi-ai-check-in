@@ -13,6 +13,7 @@ from utils.config import AppConfig
 from utils.encoding import ensure_utf8_stdio
 from utils.notify import notify
 from utils.balance_hash import load_balance_hash, save_balance_hash
+from utils.notify_policy import get_balance_change_mode, should_compare_and_save_balance_hash
 from utils.summary_notify import build_summary_html, build_summary_message
 from checkin import CheckIn
 
@@ -22,16 +23,30 @@ load_dotenv(override=True, encoding="utf-8")
 BALANCE_HASH_FILE = "balance_hash.txt"
 
 
-def generate_balance_hash(balances: dict) -> str:
+def generate_balance_hash(balances: dict, mode: str = "strict") -> str:
     """生成余额数据的hash"""
     # 将包含 quota 和 used 的结构转换为 {account_name: [quota]} 格式用于 hash 计算
     simple_balances = {}
     if balances:
         for account_key, account_balances in balances.items():
-            quota_list = []
+            if mode == "legacy":
+                quota_list = []
+                for _, balance_info in account_balances.items():
+                    quota_list.append(balance_info["quota"])
+                simple_balances[account_key] = quota_list
+                continue
+
+            snapshots: set[tuple[str, str, str]] = set()
             for _, balance_info in account_balances.items():
-                quota_list.append(balance_info["quota"])
-            simple_balances[account_key] = quota_list
+                quota = str(balance_info.get("quota", ""))
+                used = str(balance_info.get("used", ""))
+                bonus = str(balance_info.get("bonus", ""))
+                snapshots.add((quota, used, bonus))
+
+            simple_balances[account_key] = [
+                {"quota": quota, "used": used, "bonus": bonus}
+                for quota, used, bonus in sorted(snapshots)
+            ]
 
     balance_json = json.dumps(simple_balances, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(balance_json.encode("utf-8")).hexdigest()[:16]
@@ -48,6 +63,8 @@ async def main():
     print(f'🕒 Execution time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
 
     app_config = AppConfig.load_from_env()
+    balance_change_mode = get_balance_change_mode()
+    print(f"Balance change mode: {balance_change_mode}")
     print(f"⚙️ Loaded {len(app_config.providers)} provider(s)")
 
     # 检查账号配置
@@ -184,7 +201,18 @@ async def main():
             failed_accounts.append(f"{account_name}(exception: {str(e)[:80]})")
 
     # 检查余额变化
-    current_balance_hash = generate_balance_hash(current_balances) if current_balances else None
+    compare_balance_hash = should_compare_and_save_balance_hash(
+        mode=balance_change_mode,
+        has_account_failure=has_account_failure,
+        has_partial_failure=has_partial_failure,
+    )
+    if not compare_balance_hash and balance_change_mode == "strict":
+        print("Balance hash compare skipped in strict mode due to account/auth failures")
+    current_balance_hash = (
+        generate_balance_hash(current_balances, mode=balance_change_mode)
+        if (current_balances and compare_balance_hash)
+        else None
+    )
     print(f"\n\nℹ️ Current balance hash: {current_balance_hash}, Last balance hash: {last_balance_hash}")
     if current_balance_hash:
         if last_balance_hash is None:
@@ -201,7 +229,7 @@ async def main():
             print("ℹ️ No balance changes detected")
 
     # 保存当前余额hash
-    if current_balance_hash:
+    if current_balance_hash and compare_balance_hash:
         save_balance_hash(BALANCE_HASH_FILE, current_balance_hash)
 
     if need_notify:

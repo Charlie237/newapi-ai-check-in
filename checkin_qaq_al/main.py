@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.balance_hash import load_balance_hash, save_balance_hash
 from utils.encoding import ensure_utf8_stdio
 from utils.notify import notify
+from utils.notify_policy import get_balance_change_mode, should_compare_and_save_balance_hash
 from utils.summary_notify import build_summary_html, build_summary_message
 
 ensure_utf8_stdio()
@@ -332,6 +333,8 @@ async def main() -> int:
 
     debug = _to_bool(os.getenv("DEBUG", "false"), default=False)
     print(f"debug={debug}")
+    balance_change_mode = get_balance_change_mode()
+    print(f"balance_change_mode={balance_change_mode}")
 
     success_count = 0
     current_info: dict = {}
@@ -397,22 +400,30 @@ async def main() -> int:
             )
             failed_accounts.append(f"{account.name}(exception: {err[:80]})")
 
-    current_hash = generate_checkin_hash(current_info)
-    print(f"current hash: {current_hash}, last hash: {last_hash}")
+    compare_balance_hash = should_compare_and_save_balance_hash(
+        mode=balance_change_mode,
+        has_account_failure=bool(failed_accounts),
+    )
+    if not compare_balance_hash and balance_change_mode == "strict":
+        print("balance hash compare skipped in strict mode due to account failures")
 
-    need_notify = False
+    current_hash = generate_checkin_hash(current_info) if (current_info and compare_balance_hash) else ""
+    print(f"current hash: {current_hash or '-'}, last hash: {last_hash}")
+
+    need_notify = bool(failed_accounts)
     first_run = False
     balance_changed = False
-    if not last_hash:
-        need_notify = True
-        first_run = True
-        print("first run, notify")
-    elif current_hash != last_hash:
-        need_notify = True
-        balance_changed = True
-        print("hash changed, notify")
-    else:
-        print("hash unchanged, skip notification")
+    if compare_balance_hash and current_hash:
+        if not last_hash:
+            need_notify = True
+            first_run = True
+            print("first run, notify")
+        elif current_hash != last_hash:
+            need_notify = True
+            balance_changed = True
+            print("hash changed, notify")
+        else:
+            print("hash unchanged")
 
     if need_notify:
         reasons: list[str] = []
@@ -462,7 +473,7 @@ async def main() -> int:
         )
         print("notification sent")
 
-    if current_hash:
+    if current_hash and compare_balance_hash:
         save_balance_hash(CHECKIN_HASH_FILE, current_hash)
 
     return 0 if success_count > 0 else 1

@@ -28,6 +28,7 @@ from checkin_hybgzs.checkin import HybgzsCheckIn, LinuxDoCredential
 from utils.browser_utils import parse_cookies
 from utils.encoding import ensure_utf8_stdio
 from utils.notify import notify
+from utils.notify_policy import get_balance_change_mode
 from utils.summary_notify import build_summary_html, build_summary_message
 
 ensure_utf8_stdio()
@@ -434,6 +435,8 @@ async def main() -> int:
 
     proxy = load_proxy()
     debug = _to_bool(os.getenv("DEBUG", "false"), default=False)
+    balance_change_mode = get_balance_change_mode()
+    print(f"balance_change_mode={balance_change_mode} (not used by hybgzs workflow)")
 
     success_count = 0
     total_count = len(accounts)
