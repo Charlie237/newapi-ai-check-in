@@ -62,11 +62,15 @@ def _parse_ratio(value: str | None) -> tuple[int, int] | None:
 def _build_metric_html(label: str, value: str) -> str:
     label_text = _humanize_metric_label(label)
     ratio = _parse_ratio(value)
+    label_style = (
+        "font-size:12px;letter-spacing:.6px;color:#5a7590;font-weight:700;text-transform:uppercase;"
+        "line-height:1.2;min-height:30px;display:block;"
+    )
     if not ratio:
         return (
             '<div class="metric-card" '
             'style="border:1px solid #d8e4f0;border-radius:12px;padding:10px 11px;background:#fff;min-height:90px;">'
-            f'<div class="metric-label" style="font-size:12px;letter-spacing:.7px;color:#5a7590;font-weight:700;text-transform:uppercase;">{escape(label_text)}</div>'
+            f'<div class="metric-label" style="{label_style}">{escape(label_text)}</div>'
             f'<div class="metric-value" style="margin-top:5px;font-size:24px;line-height:1.1;font-weight:800;color:#0f2944;">{escape(value)}</div>'
             "</div>"
         )
@@ -76,7 +80,7 @@ def _build_metric_html(label: str, value: str) -> str:
     return (
         '<div class="metric-card" '
         'style="border:1px solid #d8e4f0;border-radius:12px;padding:10px 11px;background:#fff;min-height:90px;">'
-        f'<div class="metric-label" style="font-size:12px;letter-spacing:.7px;color:#5a7590;font-weight:700;text-transform:uppercase;">{escape(label_text)}</div>'
+        f'<div class="metric-label" style="{label_style}">{escape(label_text)}</div>'
         f'<div class="metric-value" style="margin-top:5px;font-size:24px;line-height:1.1;font-weight:800;color:#0f2944;">{escape(value)}</div>'
         '<div class="metric-bar" style="margin-top:7px;height:5px;border-radius:999px;background:#e7eff8;overflow:hidden;">'
         f'<span style="display:block;height:100%;background:linear-gradient(90deg,#1167b1,#0d9488);width:{percent:.1f}%;"></span>'
@@ -88,11 +92,27 @@ def _build_metric_html(label: str, value: str) -> str:
 
 def _build_tag_list_html(items: list[str], max_items: int = 6) -> str:
     shown, extra = _trim_items(items, max_items=max_items)
+    base_tag_style = (
+        "display:inline-block;border-radius:999px;background:#dceeff;color:#0e4f8a;font-size:12px;"
+        "font-weight:700;padding:5px 9px;line-height:1.2;border:1px solid #c5def7;margin:0 8px 8px 0;"
+    )
     if not shown:
-        return '<span class="tag empty">none</span>'
-    tags = "".join(f'<span class="tag">{escape(item)}</span>' for item in shown)
+        return (
+            '<span class="tag empty" style="display:inline-block;border-radius:999px;'
+            "background:#eef2f7;color:#6b7280;font-size:12px;font-weight:600;padding:5px 9px;"
+            'line-height:1.2;border:1px solid #d9e1eb;">none</span>'
+        )
+    tags = "".join(
+        f'<span class="tag" style="{base_tag_style}">{escape(item)}</span>'
+        for item in shown
+    )
     if extra > 0:
-        tags += f'<span class="tag extra">+{extra} more</span>'
+        tags += (
+            '<span class="tag extra" style="display:inline-block;border-radius:999px;'
+            "background:#e5e7eb;color:#374151;font-size:12px;font-weight:700;padding:5px 9px;"
+            'line-height:1.2;border:1px solid #d1d5db;margin:0 8px 8px 0;">'
+            f'+{extra} more</span>'
+        )
     return tags
 
 
