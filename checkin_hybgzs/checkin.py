@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urlparse
@@ -99,6 +100,57 @@ class HybgzsCheckIn:
             return None
         username_hash = hashlib.sha256(self.credential.username.encode("utf-8")).hexdigest()[:8]
         return os.path.join(self.storage_state_dir, f"hybgzs_{username_hash}_storage_state.json")
+
+    @staticmethod
+    def _to_float(value) -> float | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            text = value.strip().replace(",", "")
+            if not text:
+                return None
+            if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", text):
+                try:
+                    return float(text)
+                except ValueError:
+                    return None
+        return None
+
+    @classmethod
+    def _extract_amount_from_text(cls, text: str) -> float | None:
+        if not text:
+            return None
+        for match in re.finditer(r"[-+]?\d+(?:\.\d+)?", text.replace(",", "")):
+            try:
+                return float(match.group(0))
+            except ValueError:
+                continue
+        return None
+
+    @classmethod
+    def _extract_prize_amount(cls, prize: dict, message: str, prize_name: str) -> float | None:
+        if isinstance(prize, dict):
+            key_hints = ("amount", "value", "reward", "coin", "point", "credit", "num", "count", "quantity")
+            for key, raw_value in prize.items():
+                key_text = str(key).strip().lower()
+                if not key_text:
+                    continue
+                if any(hint in key_text for hint in key_hints):
+                    parsed = cls._to_float(raw_value)
+                    if parsed is not None:
+                        return parsed
+                    parsed = cls._extract_amount_from_text(str(raw_value))
+                    if parsed is not None:
+                        return parsed
+
+        for candidate in (message, prize_name):
+            parsed = cls._extract_amount_from_text(str(candidate or ""))
+            if parsed is not None:
+                return parsed
+
+        return None
 
     @staticmethod
     def _build_browser_cookies(base_url: str, cookies: dict) -> list[dict]:
@@ -814,10 +866,15 @@ class HybgzsCheckIn:
 
         data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
         prize = data.get("prize") if isinstance(data.get("prize"), dict) else {}
+        message = str(data.get("message") or "")
+        prize_name = str(prize.get("name") or "")
+        prize_amount = self._extract_prize_amount(prize, message, prize_name)
         return True, {
-            "message": data.get("message") or "",
-            "prize_name": prize.get("name") or "",
+            "message": message,
+            "prize_name": prize_name,
             "remaining": data.get("remainingSpins"),
+            "prize_amount": prize_amount,
+            "prize": prize,
         }
 
     async def _run_wheel(self, page) -> tuple[bool, dict]:
@@ -900,7 +957,7 @@ class HybgzsCheckIn:
                     login_ok, login_msg = await self._login_via_linuxdo(page)
                     details.append(f"[login] {login_msg}")
                     if not login_ok:
-                        return False, {"error": "login failed", "details": details}
+                        return False, {"error": "login failed", "details": details, "login_message": login_msg}
                     if storage_state_path:
                         try:
                             await context.storage_state(path=storage_state_path)
@@ -924,17 +981,32 @@ class HybgzsCheckIn:
                 checkin_ok, checkin_result = await self._run_checkin(page)
                 details.append(f"[checkin] {checkin_result}")
                 if not checkin_ok:
-                    return False, {"error": "checkin failed", "details": details}
+                    return False, {"error": "checkin failed", "details": details, "checkin_result": checkin_result}
                 if checkin_result.get("maintenance"):
                     details.append("[maintenance] skip wheel while site is under maintenance")
-                    return True, {"display": "hybgzs skipped: maintenance", "details": details}
+                    return True, {
+                        "display": "hybgzs skipped: maintenance",
+                        "details": details,
+                        "checkin_result": checkin_result,
+                        "wheel_result": {"skipped": True, "message": "maintenance"},
+                    }
 
                 wheel_ok, wheel_result = await self._run_wheel(page)
                 details.append(f"[wheel] {wheel_result}")
                 if not wheel_ok:
-                    return False, {"error": "wheel failed", "details": details}
+                    return False, {
+                        "error": "wheel failed",
+                        "details": details,
+                        "checkin_result": checkin_result,
+                        "wheel_result": wheel_result,
+                    }
 
-                return True, {"display": "hybgzs done", "details": details}
+                return True, {
+                    "display": "hybgzs done",
+                    "details": details,
+                    "checkin_result": checkin_result,
+                    "wheel_result": wheel_result,
+                }
             except Exception as exc:
                 await take_screenshot(page, "hybgzs_execute_exception", self.account_name)
                 return False, {"error": f"runtime exception: {exc}", "details": details}
