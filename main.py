@@ -52,6 +52,24 @@ def _normalize_notify_format(value: str | None, default: str = "both") -> str:
     return default
 
 
+def _compact_error_message(value: object, max_len: int = 220) -> str:
+    text = str(value or "Unknown error").replace("\r", " ").replace("\n", " ").strip()
+    compacted = " ".join(text.split())
+    if len(compacted) > max_len:
+        return compacted[:max_len] + "..."
+    return compacted
+
+
+def _format_amount(value: object) -> str:
+    try:
+        number = float(value)
+    except Exception:
+        return str(value)
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:.2f}".rstrip("0").rstrip(".")
+
+
 async def main():
     """运行签到流程
 
@@ -87,7 +105,7 @@ async def main():
     has_partial_failure = False
     failed_accounts: list[str] = []
     partial_accounts: list[str] = []
-    highlight_accounts: list[str] = []
+    balance_items: list[str] = []
     first_run = False
     balance_changed = False
 
@@ -124,7 +142,8 @@ async def main():
             fail_notes: list[str] = []
             this_account_balances = {}
 
-            for auth_method, success, user_info in results:
+            for raw_auth_method, success, user_info in results:
+                auth_method = str(raw_auth_method or "").strip() or "unknown"
                 if success and user_info and user_info.get("success"):
                     account_success = True
                     success_count += 1
@@ -141,20 +160,29 @@ async def main():
                     }
                 else:
                     failed_methods.append(auth_method)
-                    error_msg = user_info.get("error", "Unknown error") if user_info else "Unknown error"
-                    fail_notes.append(f"{auth_method}:{str(error_msg)[:60]}")
+                    raw_error = user_info.get("error", "Unknown error") if user_info else "Unknown error"
+                    error_msg = _compact_error_message(raw_error, max_len=220)
+                    fail_notes.append(f"{auth_method}:{error_msg}")
 
             if account_success:
                 account_success_count += 1
                 current_balances[account_key] = this_account_balances
-                highlight = f"{account_name}(ok: {','.join(successful_methods)})"
-                highlight_accounts.append(highlight)
+                balance_parts: list[str] = []
+                for method, balance_info in this_account_balances.items():
+                    quota_display = _format_amount(balance_info.get("quota", 0))
+                    used_display = _format_amount(balance_info.get("used", 0))
+                    bonus_display = _format_amount(balance_info.get("bonus", 0))
+                    balance_parts.append(
+                        f"{method}: ${quota_display} (used:${used_display}, bonus:${bonus_display})"
+                    )
+                if balance_parts:
+                    balance_items.append(f"{account_name}({'; '.join(balance_parts)})")
 
             # 如果所有认证方式都失败，需要通知
             if not account_success and results:
                 need_notify = True
                 has_account_failure = True
-                fail_note = fail_notes[0] if fail_notes else "all methods failed"
+                fail_note = " | ".join(fail_notes) if fail_notes else "all methods failed"
                 failed_accounts.append(f"{account_name}({fail_note})")
                 print(f"🔔 {account_name} all authentication methods failed, will send notification")
 
@@ -162,8 +190,9 @@ async def main():
             if failed_methods and successful_methods:
                 need_notify = True
                 has_partial_failure = True
+                fail_detail = "; ".join(fail_notes) if fail_notes else ",".join(failed_methods)
                 partial_accounts.append(
-                    f"{account_name}(ok:{','.join(successful_methods)} fail:{','.join(failed_methods)})"
+                    f"{account_name}(ok:{','.join(successful_methods)} fail:{fail_detail})"
                 )
                 print(f"🔔 {account_name} has some failed authentication methods, will send notification")
 
@@ -219,7 +248,7 @@ async def main():
             reasons=reasons,
             failed_items=failed_accounts,
             partial_items=partial_accounts,
-            highlight_items=highlight_accounts,
+            balance_items=balance_items,
         )
         notify_title = "Check-in Alert" if (has_account_failure or has_partial_failure) else "Check-in Summary"
 
@@ -232,9 +261,8 @@ async def main():
             detail_lines.append("failed_accounts: " + "; ".join(failed_accounts))
         if partial_accounts:
             detail_lines.append("partial_accounts: " + "; ".join(partial_accounts))
-        if highlight_accounts:
-            detail_lines.append("highlights: " + "; ".join(highlight_accounts))
-
+        if balance_items:
+            detail_lines.append("balances: " + "; ".join(balance_items))
         sections: list[str] = []
         if notify_format in {"detail", "both"}:
             sections.append("\n".join(detail_lines))

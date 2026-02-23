@@ -19,18 +19,20 @@ def _build_status(success_count: int, total_count: int) -> str:
     return "failed"
 
 
-def _trim_items(items: list[str], max_items: int = 8) -> tuple[list[str], int]:
+def _trim_items(items: list[str], max_items: int | None = 8) -> tuple[list[str], int]:
     if not items:
         return [], 0
     trimmed = [item for item in items if item]
     if not trimmed:
         return [], 0
+    if max_items is None:
+        return trimmed, 0
     shown = trimmed[:max_items]
     extra = len(trimmed) - len(shown)
     return shown, extra
 
 
-def _format_items(items: list[str], max_items: int = 8) -> str:
+def _format_items(items: list[str], max_items: int | None = 8) -> str:
     shown, extra = _trim_items(items, max_items=max_items)
     if not shown:
         return "-"
@@ -626,6 +628,7 @@ def build_summary_message(
     reasons: list[str] | None = None,
     failed_items: list[str] | None = None,
     partial_items: list[str] | None = None,
+    balance_items: list[str] | None = None,
     highlight_items: list[str] | None = None,
     auth_rows: list[dict[str, str]] | None = None,
     cache_rows: list[dict[str, str]] | None = None,
@@ -680,13 +683,16 @@ def build_summary_message(
                 lines.append(f"- ... (+{extra} more rows)")
     else:
         if failed_items:
-            lines.append(f"failed_accounts: {_format_items(failed_items)}")
+            lines.append(f"failed_accounts: {_format_items(failed_items, max_items=None)}")
 
         if partial_items:
-            lines.append(f"partial_accounts: {_format_items(partial_items)}")
+            lines.append(f"partial_accounts: {_format_items(partial_items, max_items=None)}")
 
         if highlight_items:
-            lines.append(f"highlights: {_format_items(highlight_items)}")
+            lines.append(f"highlights: {_format_items(highlight_items, max_items=None)}")
+
+    if balance_items:
+        lines.append(f"balances: {_format_items(balance_items, max_items=None)}")
 
     if cache_items and not rows_for_text:
         lines.append(f"cache_status: {_format_items(cache_items, max_items=10)}")
