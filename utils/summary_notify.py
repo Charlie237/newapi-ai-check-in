@@ -227,6 +227,36 @@ def _format_cache_rows(rows: list[dict[str, str]], max_rows: int = 20) -> tuple[
     return shown, extra
 
 
+def _escape_markdown_cell(value: str) -> str:
+    text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+    if not text:
+        return "-"
+    return text.replace("|", "\\|")
+
+
+def _build_text_table(rows: list[dict[str, str]]) -> list[str]:
+    data_rows = rows or [{"account": "-", "method": "-", "cache": "-", "result": "-", "detail": "-"}]
+    lines = [
+        "| Account | Auth Method | Cache | Result | Detail |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for row in data_rows:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _escape_markdown_cell(row.get("account", "-")),
+                    _escape_markdown_cell(row.get("method", "-")),
+                    _escape_markdown_cell(row.get("cache", "-")),
+                    _escape_markdown_cell(row.get("result", "-")),
+                    _escape_markdown_cell(row.get("detail", "-")),
+                ]
+            )
+            + " |"
+        )
+    return lines
+
+
 def _build_cache_table_html(rows: list[dict[str, str]]) -> str:
     shown, extra = _format_cache_rows(rows, max_rows=24)
     if not shown:
@@ -657,55 +687,36 @@ def build_summary_message(
     if reasons:
         lines.append(f"trigger: {_format_items(reasons, max_items=6)}")
 
-    rows_for_text = auth_rows or cache_rows
-    if rows_for_text:
-        shown, extra = _format_auth_rows(rows_for_text, max_rows=20)
-        if shown:
-            success_rows = [row for row in shown if row["result"] == "ok"]
-            fail_rows = [row for row in shown if row["result"] == "fail"]
-            lines.append("auth_success:")
-            if success_rows:
-                for row in success_rows:
-                    lines.append(
-                        f"- {row['account']} | {row['method']} | cache={row['cache']} | result={row['result']} | {row['detail']}"
-                    )
-            else:
-                lines.append("- -")
-            lines.append("auth_failed:")
-            if fail_rows:
-                for row in fail_rows:
-                    lines.append(
-                        f"- {row['account']} | {row['method']} | cache={row['cache']} | result={row['result']} | {row['detail']}"
-                    )
-            else:
-                lines.append("- -")
-            if extra > 0:
-                lines.append(f"- ... (+{extra} more rows)")
-    else:
-        if failed_items:
-            lines.append(f"failed_accounts: {_format_items(failed_items, max_items=None)}")
+    table_source = auth_rows or cache_rows or []
+    if not table_source and cache_items:
+        table_source = [{"account": "-", "method": "-", "cache": "-", "result": "-", "detail": item} for item in cache_items]
+    if not table_source:
+        for item in highlight_items or []:
+            table_source.append({"account": "-", "method": "-", "cache": "-", "result": "ok", "detail": item})
+        for item in balance_items or []:
+            table_source.append({"account": "-", "method": "-", "cache": "-", "result": "ok", "detail": item})
+        for item in failed_items or []:
+            table_source.append({"account": "-", "method": "-", "cache": "-", "result": "fail", "detail": item})
+        for item in partial_items or []:
+            table_source.append({"account": "-", "method": "-", "cache": "-", "result": "fail", "detail": item})
 
-        if partial_items:
-            lines.append(f"partial_accounts: {_format_items(partial_items, max_items=None)}")
+    shown, extra = _format_auth_rows(table_source, max_rows=48)
+    success_rows = [row for row in shown if row["result"] == "ok"]
+    fail_rows = [row for row in shown if row["result"] == "fail"]
+    if extra > 0:
+        fail_rows.append(
+            {
+                "account": f"... (+{extra} more rows)",
+                "method": "-",
+                "cache": "-",
+                "result": "-",
+                "detail": "-",
+            }
+        )
 
-        if highlight_items:
-            lines.append(f"highlights: {_format_items(highlight_items, max_items=None)}")
-
-    if balance_items:
-        lines.append(f"balances: {_format_items(balance_items, max_items=None)}")
-
-    if cache_items and not rows_for_text:
-        lines.append(f"cache_status: {_format_items(cache_items, max_items=10)}")
-
-    if cache_rows and not rows_for_text:
-        shown, extra = _format_cache_rows(cache_rows, max_rows=20)
-        if shown:
-            lines.append("cache_status:")
-            for row in shown:
-                lines.append(
-                    f"- {row['account']} | {row['method']} | cache={row['cache']} | result={row['result']} | {row['detail']}"
-                )
-            if extra > 0:
-                lines.append(f"- ... (+{extra} more rows)")
+    lines.append("successful_auth:")
+    lines.extend(_build_text_table(success_rows))
+    lines.append("failed_auth:")
+    lines.extend(_build_text_table(fail_rows))
 
     return "\n".join(lines)

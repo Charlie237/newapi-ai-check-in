@@ -87,20 +87,6 @@ def _to_positive_int(value, default: int) -> int:
         return default
 
 
-def _normalize_notify_format(value: str | None, default: str = "both") -> str:
-    """Normalize notify format to one of: detail, summary, both."""
-    if not value:
-        return default
-    normalized = str(value).strip().lower()
-    if normalized in {"detail", "detailed"}:
-        return "detail"
-    if normalized in {"summary", "brief"}:
-        return "summary"
-    if normalized in {"both", "all", "full"}:
-        return "both"
-    return default
-
-
 def _parse_linuxdo_credential(value) -> LinuxDoCredential | None:
     if not isinstance(value, dict):
         return None
@@ -345,11 +331,9 @@ async def main() -> int:
             print(f"proxy loaded as url: {proxy_str}")
 
     debug = _to_bool(os.getenv("DEBUG", "false"), default=False)
-    notify_format = _normalize_notify_format(os.getenv("QAQ_AL_NOTIFY_FORMAT"), default="both")
-    print(f"debug={debug}, notify_format={notify_format}")
+    print(f"debug={debug}")
 
     success_count = 0
-    detail_lines: list[str] = []
     current_info: dict = {}
     failed_accounts: list[str] = []
     highlight_accounts: list[str] = []
@@ -387,9 +371,6 @@ async def main() -> int:
                     }
                 )
                 highlight_accounts.append(f"{account.name}(ok:{auth_source})")
-                detail_lines.append(f"OK {account.name}: {detail}")
-                if result.get("sid_refreshed"):
-                    detail_lines.append(f"  sid refreshed via linuxdo ({login_message or 'updated'})")
             else:
                 auth_rows.append(
                     {
@@ -401,7 +382,6 @@ async def main() -> int:
                     }
                 )
                 failed_accounts.append(f"{account.name}({error_msg[:80] or 'unknown error'})")
-                detail_lines.append(f"FAIL {account.name}: {error_msg}")
 
         except Exception as exc:
             err = str(exc)[:160]
@@ -416,7 +396,6 @@ async def main() -> int:
                 }
             )
             failed_accounts.append(f"{account.name}(exception: {err[:80]})")
-            detail_lines.append(f"FAIL {account.name}: exception: {err}")
 
     current_hash = generate_checkin_hash(current_info)
     print(f"current hash: {current_hash}, last hash: {last_hash}")
@@ -471,29 +450,15 @@ async def main() -> int:
             auth_rows=auth_rows,
         )
 
-        detail_section = [
-            f"time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"accounts_success: {success_count}/{total_count}",
-            f"auth_methods_success: {success_count}/{total_count}",
-        ]
-        if detail_lines:
-            detail_section.extend(["details:", *detail_lines])
-
-        sections: list[str] = []
-        if notify_format in {"detail", "both"}:
-            sections.append("\n".join(detail_section))
-        if notify_format in {"summary", "both"}:
-            sections.append(summary_content)
-        notify_content = "\n\n".join(sections) if sections else summary_content
+        notify_content = summary_content
 
         notify_title = "qaq.al check-in alert" if failed_accounts else "qaq.al check-in success"
-        html_notify_content = summary_html if notify_format in {"summary", "both"} else None
         print(notify_content)
         notify.push_message(
             notify_title,
             notify_content,
             msg_type="text",
-            html_content=html_notify_content,
+            html_content=summary_html,
         )
         print("notification sent")
 
