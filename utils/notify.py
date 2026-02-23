@@ -55,7 +55,7 @@ class NotificationKit:
 		if not self.email_user or not self.email_pass or not self.email_to:
 			raise ValueError('Email configuration not set')
 
-		# MIMEText 需要 'plain' 或 'html'，而不是 'text'
+		# MIMEText needs 'plain' or 'html'
 		mime_subtype = 'plain' if msg_type == 'text' else 'html'
 		msg = MIMEText(content, mime_subtype, 'utf-8')
 		msg['From'] = f'newapi.ai Assistant <{self.email_user}>'
@@ -116,10 +116,19 @@ class NotificationKit:
 		data = {'chat_id': self.telegram_chat_id, 'text': text, 'parse_mode': 'Markdown'}
 		curl_requests.post(f'https://api.telegram.org/bot{self.telegram_bot_token}/sendMessage', json=data, timeout=30)
 
-	def push_message(self, title: str, content: str, msg_type: Literal['text', 'html'] = 'text'):
+	def push_message(
+		self,
+		title: str,
+		content: str,
+		msg_type: Literal['text', 'html'] = 'text',
+		html_content: str | None = None,
+	):
+		email_content = html_content if html_content is not None else content
+		email_msg_type: Literal['text', 'html'] = 'html' if html_content is not None else msg_type
+		pushplus_content = html_content if html_content is not None else content
 		notifications = [
-			('Email', lambda: self.send_email(title, content, msg_type)),
-			('PushPlus', lambda: self.send_pushplus(title, content)),
+			('Email', lambda: self.send_email(title, email_content, email_msg_type)),
+			('PushPlus', lambda: self.send_pushplus(title, pushplus_content)),
 			('Server Push', lambda: self.send_serverPush(title, content)),
 			('DingTalk', lambda: self.send_dingtalk(title, content)),
 			('Feishu', lambda: self.send_feishu(title, content)),
