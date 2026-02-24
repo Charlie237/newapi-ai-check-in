@@ -6,7 +6,6 @@
 import asyncio
 import hashlib
 import json
-import os
 import sys
 from datetime import datetime
 from dotenv import load_dotenv
@@ -14,7 +13,8 @@ from utils.config import AppConfig
 from utils.encoding import ensure_utf8_stdio
 from utils.notify import notify
 from utils.balance_hash import load_balance_hash, save_balance_hash
-from utils.summary_notify import build_summary_message
+from utils.notify_policy import get_balance_change_mode, should_compare_and_save_balance_hash
+from utils.summary_notify import build_summary_html, build_summary_message
 from checkin import CheckIn
 
 ensure_utf8_stdio()
@@ -23,51 +23,33 @@ load_dotenv(override=True, encoding="utf-8")
 BALANCE_HASH_FILE = "balance_hash.txt"
 
 
-def generate_balance_hash(balances: dict) -> str:
+def generate_balance_hash(balances: dict, mode: str = "strict") -> str:
     """生成余额数据的hash"""
     # 将包含 quota 和 used 的结构转换为 {account_name: [quota]} 格式用于 hash 计算
     simple_balances = {}
     if balances:
         for account_key, account_balances in balances.items():
-            quota_list = []
+            if mode == "legacy":
+                quota_list = []
+                for _, balance_info in account_balances.items():
+                    quota_list.append(balance_info["quota"])
+                simple_balances[account_key] = quota_list
+                continue
+
+            snapshots: set[tuple[str, str, str]] = set()
             for _, balance_info in account_balances.items():
-                quota_list.append(balance_info["quota"])
-            simple_balances[account_key] = quota_list
+                quota = str(balance_info.get("quota", ""))
+                used = str(balance_info.get("used", ""))
+                bonus = str(balance_info.get("bonus", ""))
+                snapshots.add((quota, used, bonus))
+
+            simple_balances[account_key] = [
+                {"quota": quota, "used": used, "bonus": bonus}
+                for quota, used, bonus in sorted(snapshots)
+            ]
 
     balance_json = json.dumps(simple_balances, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(balance_json.encode("utf-8")).hexdigest()[:16]
-
-
-def _normalize_notify_format(value: str | None, default: str = "both") -> str:
-    """Normalize notify format to one of: detail, summary, both."""
-    if not value:
-        return default
-    normalized = str(value).strip().lower()
-    if normalized in {"detail", "detailed"}:
-        return "detail"
-    if normalized in {"summary", "brief"}:
-        return "summary"
-    if normalized in {"both", "all", "full"}:
-        return "both"
-    return default
-
-
-def _compact_error_message(value: object, max_len: int = 220) -> str:
-    text = str(value or "Unknown error").replace("\r", " ").replace("\n", " ").strip()
-    compacted = " ".join(text.split())
-    if len(compacted) > max_len:
-        return compacted[:max_len] + "..."
-    return compacted
-
-
-def _format_amount(value: object) -> str:
-    try:
-        number = float(value)
-    except Exception:
-        return str(value)
-    if number.is_integer():
-        return str(int(number))
-    return f"{number:.2f}".rstrip("0").rstrip(".")
 
 
 async def main():
@@ -81,6 +63,8 @@ async def main():
     print(f'🕒 Execution time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
 
     app_config = AppConfig.load_from_env()
+    balance_change_mode = get_balance_change_mode()
+    print(f"Balance change mode: {balance_change_mode}")
     print(f"⚙️ Loaded {len(app_config.providers)} provider(s)")
 
     # 检查账号配置
@@ -89,8 +73,6 @@ async def main():
         return 1
     
     print(f"⚙️ Found {len(app_config.accounts)} account(s)")
-    notify_format = _normalize_notify_format(os.getenv("CHECKIN_NOTIFY_FORMAT"), default="both")
-    print(f"⚙️ notify_format={notify_format}")
 
     # 加载余额hash
     last_balance_hash = load_balance_hash(BALANCE_HASH_FILE)
@@ -105,7 +87,8 @@ async def main():
     has_partial_failure = False
     failed_accounts: list[str] = []
     partial_accounts: list[str] = []
-    balance_items: list[str] = []
+    highlight_accounts: list[str] = []
+    auth_detail_rows: list[dict[str, str]] = []
     first_run = False
     balance_changed = False
 
@@ -142,8 +125,33 @@ async def main():
             fail_notes: list[str] = []
             this_account_balances = {}
 
-            for raw_auth_method, success, user_info in results:
-                auth_method = str(raw_auth_method or "").strip() or "unknown"
+            for auth_method, success, user_info in results:
+                cache_status = None
+                if isinstance(user_info, dict):
+                    cache_status = user_info.get("cache_status")
+                    if isinstance(cache_status, list):
+                        cache_status = cache_status[0] if cache_status else None
+                    if isinstance(cache_status, str):
+                        cache_status = cache_status.strip().lower()
+                    else:
+                        cache_status = None
+                cache_label = cache_status if cache_status in {"hit", "miss", "stale"} else "-"
+                method_success = bool(success and user_info and user_info.get("success"))
+                detail = "-"
+                if not method_success:
+                    detail = str(user_info.get("error", "Unknown error"))[:80] if isinstance(user_info, dict) else "Unknown error"
+                if method_success:
+                    detail = str(user_info.get("display", "-"))[:120] if isinstance(user_info, dict) else "-"
+                auth_detail_rows.append(
+                    {
+                        "account": account_name,
+                        "method": auth_method,
+                        "cache": cache_label,
+                        "result": "ok" if method_success else "fail",
+                        "detail": detail,
+                    }
+                )
+
                 if success and user_info and user_info.get("success"):
                     account_success = True
                     success_count += 1
@@ -160,29 +168,20 @@ async def main():
                     }
                 else:
                     failed_methods.append(auth_method)
-                    raw_error = user_info.get("error", "Unknown error") if user_info else "Unknown error"
-                    error_msg = _compact_error_message(raw_error, max_len=220)
-                    fail_notes.append(f"{auth_method}:{error_msg}")
+                    error_msg = user_info.get("error", "Unknown error") if user_info else "Unknown error"
+                    fail_notes.append(f"{auth_method}:{str(error_msg)[:60]}")
 
             if account_success:
                 account_success_count += 1
                 current_balances[account_key] = this_account_balances
-                balance_parts: list[str] = []
-                for method, balance_info in this_account_balances.items():
-                    quota_display = _format_amount(balance_info.get("quota", 0))
-                    used_display = _format_amount(balance_info.get("used", 0))
-                    bonus_display = _format_amount(balance_info.get("bonus", 0))
-                    balance_parts.append(
-                        f"{method}: ${quota_display} (used:${used_display}, bonus:${bonus_display})"
-                    )
-                if balance_parts:
-                    balance_items.append(f"{account_name}({'; '.join(balance_parts)})")
+                highlight = f"{account_name}(ok: {','.join(successful_methods)})"
+                highlight_accounts.append(highlight)
 
             # 如果所有认证方式都失败，需要通知
             if not account_success and results:
                 need_notify = True
                 has_account_failure = True
-                fail_note = " | ".join(fail_notes) if fail_notes else "all methods failed"
+                fail_note = fail_notes[0] if fail_notes else "all methods failed"
                 failed_accounts.append(f"{account_name}({fail_note})")
                 print(f"🔔 {account_name} all authentication methods failed, will send notification")
 
@@ -190,9 +189,8 @@ async def main():
             if failed_methods and successful_methods:
                 need_notify = True
                 has_partial_failure = True
-                fail_detail = "; ".join(fail_notes) if fail_notes else ",".join(failed_methods)
                 partial_accounts.append(
-                    f"{account_name}(ok:{','.join(successful_methods)} fail:{fail_detail})"
+                    f"{account_name}(ok:{','.join(successful_methods)} fail:{','.join(failed_methods)})"
                 )
                 print(f"🔔 {account_name} has some failed authentication methods, will send notification")
 
@@ -203,7 +201,18 @@ async def main():
             failed_accounts.append(f"{account_name}(exception: {str(e)[:80]})")
 
     # 检查余额变化
-    current_balance_hash = generate_balance_hash(current_balances) if current_balances else None
+    compare_balance_hash = should_compare_and_save_balance_hash(
+        mode=balance_change_mode,
+        has_account_failure=has_account_failure,
+        has_partial_failure=has_partial_failure,
+    )
+    if not compare_balance_hash and balance_change_mode == "strict":
+        print("Balance hash compare skipped in strict mode due to account/auth failures")
+    current_balance_hash = (
+        generate_balance_hash(current_balances, mode=balance_change_mode)
+        if (current_balances and compare_balance_hash)
+        else None
+    )
     print(f"\n\nℹ️ Current balance hash: {current_balance_hash}, Last balance hash: {last_balance_hash}")
     if current_balance_hash:
         if last_balance_hash is None:
@@ -220,7 +229,7 @@ async def main():
             print("ℹ️ No balance changes detected")
 
     # 保存当前余额hash
-    if current_balance_hash:
+    if current_balance_hash and compare_balance_hash:
         save_balance_hash(BALANCE_HASH_FILE, current_balance_hash)
 
     if need_notify:
@@ -248,30 +257,30 @@ async def main():
             reasons=reasons,
             failed_items=failed_accounts,
             partial_items=partial_accounts,
-            balance_items=balance_items,
+            highlight_items=highlight_accounts,
+            auth_rows=auth_detail_rows,
+        )
+        summary_html = build_summary_html(
+            workflow="main/checkin",
+            success_count=account_success_count,
+            total_count=len(app_config.accounts),
+            metrics=metrics,
+            reasons=reasons,
+            failed_items=failed_accounts,
+            partial_items=partial_accounts,
+            highlight_items=highlight_accounts,
+            auth_rows=auth_detail_rows,
         )
         notify_title = "Check-in Alert" if (has_account_failure or has_partial_failure) else "Check-in Summary"
 
-        detail_lines: list[str] = [
-            f"time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"accounts_success: {account_success_count}/{len(app_config.accounts)}",
-            f"auth_methods_success: {success_count}/{total_count}",
-        ]
-        if failed_accounts:
-            detail_lines.append("failed_accounts: " + "; ".join(failed_accounts))
-        if partial_accounts:
-            detail_lines.append("partial_accounts: " + "; ".join(partial_accounts))
-        if balance_items:
-            detail_lines.append("balances: " + "; ".join(balance_items))
-        sections: list[str] = []
-        if notify_format in {"detail", "both"}:
-            sections.append("\n".join(detail_lines))
-        if notify_format in {"summary", "both"}:
-            sections.append(summary_content)
-        notify_content = "\n\n".join(sections) if sections else summary_content
-
+        notify_content = summary_content
         print(notify_content)
-        notify.push_message(notify_title, notify_content, msg_type="text")
+        notify.push_message(
+            notify_title,
+            notify_content,
+            msg_type="text",
+            html_content=summary_html,
+        )
         print("🔔 Notification sent due to failures or balance changes")
     else:
         print("ℹ️ All accounts successful and no balance changes detected, notification skipped")

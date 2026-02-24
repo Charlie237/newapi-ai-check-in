@@ -101,6 +101,7 @@ jobs:
           ACCOUNTS_LINUX_DO: ${{ secrets.ACCOUNTS_LINUX_DO }}
           PROXY: ${{ secrets.PROXY_QAQ_AL }}
           DEBUG: ${{ github.event_name == 'workflow_dispatch' && inputs.debug || vars.DEBUG || 'false' }}
+          BALANCE_CHANGE_MODE: ${{ vars.BALANCE_CHANGE_MODE || 'strict' }}
           DINGDING_WEBHOOK: ${{ secrets.DINGDING_WEBHOOK }}
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
@@ -112,7 +113,6 @@ jobs:
           WEIXIN_WEBHOOK: ${{ secrets.WEIXIN_WEBHOOK }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          QAQ_AL_NOTIFY_FORMAT: ${{ secrets.QAQ_AL_NOTIFY_FORMAT || vars.QAQ_AL_NOTIFY_FORMAT || 'detail' }}
         run: |
           $utf8 = [System.Text.UTF8Encoding]::new($false)
           [Console]::InputEncoding = $utf8

@@ -28,6 +28,7 @@ from checkin_hybgzs.checkin import HybgzsCheckIn, LinuxDoCredential
 from utils.browser_utils import parse_cookies
 from utils.encoding import ensure_utf8_stdio
 from utils.notify import notify
+from utils.notify_policy import get_balance_change_mode
 from utils.summary_notify import build_summary_html, build_summary_message
 
 ensure_utf8_stdio()
@@ -84,20 +85,6 @@ def _to_non_negative_int(value, default: int = 0) -> int:
     except Exception:
         return default
     return parsed if parsed >= 0 else default
-
-
-def _normalize_notify_format(value: str | None, default: str = "both") -> str:
-    """Normalize notify format to one of: detail, summary, both."""
-    if not value:
-        return default
-    normalized = str(value).strip().lower()
-    if normalized in {"detail", "detailed"}:
-        return "detail"
-    if normalized in {"summary", "brief"}:
-        return "summary"
-    if normalized in {"both", "all", "full"}:
-        return "both"
-    return default
 
 
 def _parse_linuxdo_credential(value) -> LinuxDoCredential | None:
@@ -448,11 +435,11 @@ async def main() -> int:
 
     proxy = load_proxy()
     debug = _to_bool(os.getenv("DEBUG", "false"), default=False)
-    notify_format = _normalize_notify_format(os.getenv("HYBGZS_NOTIFY_FORMAT"), default="both")
+    balance_change_mode = get_balance_change_mode()
+    print(f"balance_change_mode={balance_change_mode} (not used by hybgzs workflow)")
 
     success_count = 0
     total_count = len(accounts)
-    detail_lines: list[str] = []
     auth_rows: list[dict[str, str]] = []
     failed_accounts: list[str] = []
     highlight_accounts: list[str] = []
@@ -490,7 +477,6 @@ async def main() -> int:
                     }
                 )
                 highlight_accounts.append(f"{account.name}(ok:{method})")
-                detail_lines.append(f"OK {account.name}: {detail}")
             else:
                 fail_detail = _build_hyb_failure_detail(data)
                 auth_rows.append(
@@ -503,10 +489,6 @@ async def main() -> int:
                     }
                 )
                 failed_accounts.append(f"{account.name}({fail_detail[:80]})")
-                detail_lines.append(f"FAIL {account.name}: {fail_detail}")
-
-            for detail in details:
-                detail_lines.append(f"  - {detail}")
 
         except Exception as exc:
             err = str(exc)[:160]
@@ -520,7 +502,6 @@ async def main() -> int:
                 }
             )
             failed_accounts.append(f"{account.name}(exception: {err[:80]})")
-            detail_lines.append(f"FAIL {account.name}: exception: {err}")
 
     has_account_failure = bool(failed_accounts)
     has_partial_failure = has_account_failure and success_count > 0
@@ -558,27 +539,15 @@ async def main() -> int:
         auth_rows=auth_rows,
     )
 
-    detail_section = [f"time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]
-    if detail_lines:
-        detail_section.extend(["details:", *detail_lines])
-    else:
-        detail_section.extend(["details:", "-"])
-
-    sections: list[str] = []
-    if notify_format in {"detail", "both"}:
-        sections.append("\n".join(detail_section))
-    if notify_format in {"summary", "both"}:
-        sections.append(summary_content)
-    report = "\n\n".join(sections) if sections else summary_content
+    report = summary_content
 
     title = "hybgzs automation alert" if has_account_failure else "hybgzs automation"
-    html_notify_content = summary_html if notify_format in {"summary", "both"} else None
     print(report)
     notify.push_message(
         title,
         report,
         msg_type="text",
-        html_content=html_notify_content,
+        html_content=summary_html,
     )
     return 0 if success_count > 0 else 1
 

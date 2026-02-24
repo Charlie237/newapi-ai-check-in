@@ -142,7 +142,6 @@ jobs:
           PROVIDERS: ${{ inputs.providers || secrets.PROVIDERS }}
           PROXY: ${{ secrets.PROXY }}
           DEBUG: ${{ github.event_name == 'workflow_dispatch' && inputs.debug || vars.DEBUG || 'false' }}
-          CHECKIN_NOTIFY_FORMAT: summary
         run: |
           $utf8 = [System.Text.UTF8Encoding]::new($false)
           [Console]::InputEncoding = $utf8

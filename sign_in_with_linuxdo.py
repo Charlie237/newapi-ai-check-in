@@ -5,10 +5,12 @@
 
 import json
 import os
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
+
 from camoufox.async_api import AsyncCamoufox
 from playwright_captcha import CaptchaType, ClickSolver, FrameworkType
-from utils.browser_utils import filter_cookies, take_screenshot, save_page_content_to_file
+
+from utils.browser_utils import filter_cookies, save_page_content_to_file, take_screenshot
 from utils.config import ProviderConfig
 from utils.get_headers import get_browser_headers, print_browser_headers
 
@@ -129,12 +131,14 @@ class LinuxDoSignIn:
                 try:
                     # 检查是否已经登录（通过缓存恢复）
                     is_logged_in = False
+                    has_cache_file = bool(cache_file_path and os.path.exists(cache_file_path))
+                    cache_status = "stale" if has_cache_file else "miss"
                     oauth_url = (
                         f"https://connect.linux.do/oauth2/authorize?"
                         f"response_type=code&client_id={client_id}&state={auth_state}"
                     )
 
-                    if os.path.exists(cache_file_path):
+                    if has_cache_file:
                         try:
                             print(f"ℹ️ {self.account_name}: Checking login status at {oauth_url}")
                             # 直接访问授权页面检查是否已登录
@@ -149,6 +153,7 @@ class LinuxDoSignIn:
                             # 登录后可能直接跳转回应用页面
                             if current_url.startswith(self.provider_config.origin) or "code=" in current_url:
                                 is_logged_in = True
+                                cache_status = "hit"
                                 print(
                                     f"✅ {self.account_name}: Already logged in via cache, proceeding to authorization"
                                 )
@@ -161,6 +166,7 @@ class LinuxDoSignIn:
                                 allow_btn = await page.query_selector('a[href^="/oauth2/approve"]')
                                 if allow_btn:
                                     is_logged_in = True
+                                    cache_status = "hit"
                                     print(
                                         f"✅ {self.account_name}: Already logged in via cache, proceeding to authorization"
                                     )
@@ -227,7 +233,7 @@ class LinuxDoSignIn:
                         except Exception as e:
                             print(f"❌ {self.account_name}: Error occurred while signing in linux.do: {e}")
                             await take_screenshot(page, "signin_bypass_error", self.account_name)
-                            return False, {"error": "Linux.do sign-in error"}, None
+                            return False, {"error": "Linux.do sign-in error", "cache_status": cache_status}, None
 
                         # 登录后访问授权页面
                         try:
@@ -236,7 +242,11 @@ class LinuxDoSignIn:
                         except Exception as e:
                             print(f"❌ {self.account_name}: Failed to navigate to authorization page: {e}")
                             await take_screenshot(page, "auth_page_navigation_failed_bypass", self.account_name)
-                            return False, {"error": "Linux.do authorization page navigation failed"}, None
+                            return (
+                                False,
+                                {"error": "Linux.do authorization page navigation failed", "cache_status": cache_status},
+                                None,
+                            )
 
                     try:
                         # 等待授权按钮出现，最多等待30秒
@@ -277,14 +287,14 @@ class LinuxDoSignIn:
                         else:
                             print(f"❌ {self.account_name}: Approve button not found")
                             await take_screenshot(page, "approve_button_not_found_bypass", self.account_name)
-                            return False, {"error": "Linux.do allow button not found"}, None
+                            return False, {"error": "Linux.do allow button not found", "cache_status": cache_status}, None
                     except Exception as e:
                         print(
                             f"❌ {self.account_name}: Error occurred during authorization: {e}\n"
                             f"Current page is: {page.url}"
                         )
                         await take_screenshot(page, "authorization_failed_bypass", self.account_name)
-                        return False, {"error": "Linux.do authorization failed"}, None
+                        return False, {"error": "Linux.do authorization failed", "cache_status": cache_status}, None
 
                     # 统一处理授权逻辑（无论是否通过缓存登录）
                     # 标记是否检测到 Cloudflare 验证页面
@@ -386,6 +396,7 @@ class LinuxDoSignIn:
                         user_cookies = filter_cookies(restore_cookies, self.provider_config.origin)
 
                         result = {"cookies": user_cookies, "api_user": api_user}
+                        result["cache_status"] = cache_status
 
                         # 只有当检测到 Cloudflare 验证页面时，才获取并返回浏览器指纹头部信息
                         browser_headers = None
@@ -443,6 +454,7 @@ class LinuxDoSignIn:
                                     print(
                                         f"⚠️ {self.account_name}: Failed to refresh storage state cache: {cache_save_err}"
                                     )
+                            query_params["cache_status"] = [cache_status]
                             return True, query_params, browser_headers
                         else:
                             current_page = page.url
@@ -454,6 +466,7 @@ class LinuxDoSignIn:
                                 False,
                                 {
                                     "error": f"Linux.do OAuth failed - no code in callback (url: {current_page})",
+                                    "cache_status": cache_status,
                                 },
                                 None,
                             )
@@ -461,7 +474,7 @@ class LinuxDoSignIn:
                 except Exception as e:
                     print(f"❌ {self.account_name}: Error occurred while processing linux.do page: {e}")
                     await take_screenshot(page, "page_navigation_error_bypass", self.account_name)
-                    return False, {"error": "Linux.do page navigation error"}, None
+                    return False, {"error": "Linux.do page navigation error", "cache_status": cache_status}, None
                 finally:
                     await page.close()
                     await context.close()

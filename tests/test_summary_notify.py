@@ -39,10 +39,11 @@ def test_build_summary_message_keeps_unicode_names():
         now=datetime(2026, 2, 18, 10, 18, 45),
     )
 
-    assert "auth_success:" in content
-    assert "auth_failed:" in content
-    assert f"- {highlight_name} | user | cache=hit | result=ok | -" in content
-    assert f"- {failed_name} | linux.do | cache=miss | result=fail | Linux.do sign-in error" in content
+    assert "successful_auth:" in content
+    assert "failed_auth:" in content
+    assert "| Account | Auth Method | Cache | Result | Detail |" in content
+    assert f"| {highlight_name} | user | hit | ok | - |" in content
+    assert f"| {failed_name} | linux.do | miss | fail | Linux.do sign-in error |" in content
 
 
 def test_build_summary_html_keeps_unicode_names_and_structure():
@@ -82,16 +83,16 @@ def test_build_summary_html_keeps_unicode_names_and_structure():
     assert "PARTIAL" in html
     assert "Successful Auth" in html
     assert "Failed Auth" in html
-    assert "<th>Account</th>" in html
-    assert "<th>Auth Method</th>" in html
+    assert "Account</th>" in html
+    assert "Auth Method</th>" in html
     assert '<col class="col-account" />' in html
     assert '<col class="col-method" />' in html
     assert ".auth-table col.col-account { width: 24%; }" in html
     assert "account_failure" in html
     assert "balance_changed" in html
-    assert "<td>Demo</td>" in html
-    assert "<td>user</td>" in html
-    assert "<td>linux.do</td>" in html
+    assert ">Demo</td>" in html
+    assert ">user</td>" in html
+    assert ">linux.do</td>" in html
     assert "Linux.do sign-in error" in html
 
 
@@ -110,9 +111,10 @@ def test_build_summary_message_includes_balance_items():
         now=datetime(2026, 2, 18, 10, 18, 45),
     )
 
+    assert "successful_auth:" in content
+    assert "failed_auth:" in content
     assert failed_name in content
     assert balance_name in content
-    assert "balances:" in content
 
 
 def test_build_summary_message_does_not_truncate_balances_and_failures():
@@ -131,6 +133,8 @@ def test_build_summary_message_does_not_truncate_balances_and_failures():
         now=datetime(2026, 2, 18, 10, 18, 45),
     )
 
+    assert "successful_auth:" in content
+    assert "failed_auth:" in content
     assert "... (+" not in content
     assert balances[-1] in content
     assert failed_items[-1] in content

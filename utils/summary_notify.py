@@ -60,34 +60,59 @@ def _parse_ratio(value: str | None) -> tuple[int, int] | None:
 
 
 def _build_metric_html(label: str, value: str) -> str:
+    label_text = _humanize_metric_label(label)
     ratio = _parse_ratio(value)
+    label_style = (
+        "font-size:12px;letter-spacing:.6px;color:#5a7590;font-weight:700;text-transform:uppercase;"
+        "line-height:1.2;min-height:30px;display:block;"
+    )
     if not ratio:
         return (
-            '<div class="metric-card">'
-            f'<div class="metric-label">{escape(label)}</div>'
-            f'<div class="metric-value">{escape(value)}</div>'
+            '<div class="metric-card" '
+            'style="border:1px solid #d8e4f0;border-radius:12px;padding:10px 11px;background:#fff;min-height:90px;">'
+            f'<div class="metric-label" style="{label_style}">{escape(label_text)}</div>'
+            f'<div class="metric-value" style="margin-top:5px;font-size:24px;line-height:1.1;font-weight:800;color:#0f2944;">{escape(value)}</div>'
             "</div>"
         )
 
     numerator, denominator = ratio
     percent = max(0.0, min(100.0, (numerator / denominator) * 100.0))
     return (
-        '<div class="metric-card">'
-        f'<div class="metric-label">{escape(label)}</div>'
-        f'<div class="metric-value">{escape(value)}</div>'
-        f'<div class="metric-bar"><span style="width: {percent:.1f}%;"></span></div>'
-        f'<div class="metric-sub">{percent:.1f}%</div>'
+        '<div class="metric-card" '
+        'style="border:1px solid #d8e4f0;border-radius:12px;padding:10px 11px;background:#fff;min-height:90px;">'
+        f'<div class="metric-label" style="{label_style}">{escape(label_text)}</div>'
+        f'<div class="metric-value" style="margin-top:5px;font-size:24px;line-height:1.1;font-weight:800;color:#0f2944;">{escape(value)}</div>'
+        '<div class="metric-bar" style="margin-top:7px;height:5px;border-radius:999px;background:#e7eff8;overflow:hidden;">'
+        f'<span style="display:block;height:100%;background:linear-gradient(90deg,#1167b1,#0d9488);width:{percent:.1f}%;"></span>'
+        "</div>"
+        f'<div class="metric-sub" style="margin-top:5px;font-size:12px;color:#5a7590;">{percent:.1f}%</div>'
         "</div>"
     )
 
 
 def _build_tag_list_html(items: list[str], max_items: int = 6) -> str:
     shown, extra = _trim_items(items, max_items=max_items)
+    base_tag_style = (
+        "display:inline-block;border-radius:999px;background:#dceeff;color:#0e4f8a;font-size:12px;"
+        "font-weight:700;padding:5px 9px;line-height:1.2;border:1px solid #c5def7;margin:0 8px 8px 0;"
+    )
     if not shown:
-        return '<span class="tag empty">none</span>'
-    tags = "".join(f'<span class="tag">{escape(item)}</span>' for item in shown)
+        return (
+            '<span class="tag empty" style="display:inline-block;border-radius:999px;'
+            "background:#eef2f7;color:#6b7280;font-size:12px;font-weight:600;padding:5px 9px;"
+            'line-height:1.2;border:1px solid #d9e1eb;">none</span>'
+        )
+    tags = "".join(
+        f'<span class="tag" style="{base_tag_style}">{escape(item)}</span>'
+        for item in shown
+    )
     if extra > 0:
-        tags += f'<span class="tag extra">+{extra} more</span>'
+        tags += (
+            '<span class="tag extra" style="display:inline-block;border-radius:999px;'
+            "background:#e5e7eb;color:#374151;font-size:12px;font-weight:700;padding:5px 9px;"
+            'line-height:1.2;border:1px solid #d1d5db;margin:0 8px 8px 0;">'
+            f'+{extra} more</span>'
+        )
     return tags
 
 
@@ -108,6 +133,21 @@ def _build_list_section_html(title: str, items: list[str], max_items: int = 8) -
     )
 
 
+def _humanize_metric_label(label: str) -> str:
+    raw = str(label or "").strip().lower()
+    mapping = {
+        "success": "Success",
+        "failed": "Failed",
+        "accounts_success": "Accounts Success",
+        "auth_methods_success": "Auth Methods Success",
+    }
+    if raw in mapping:
+        return mapping[raw]
+
+    text = str(label or "").strip().replace("_", " ")
+    return text if text else "-"
+
+
 def _format_auth_rows(rows: list[dict[str, str]], max_rows: int = 40) -> tuple[list[dict[str, str]], int]:
     if not rows:
         return [], 0
@@ -118,9 +158,11 @@ def _format_auth_rows(rows: list[dict[str, str]], max_rows: int = 40) -> tuple[l
             continue
         account = str(row.get("account", "")).strip() or "-"
         method = str(row.get("method", "")).strip() or "-"
-        cache = str(row.get("cache", "")).strip().lower() or "-"
-        if cache not in {"hit", "miss", "stale", "-"}:
-            cache = "-"
+        cache = str(row.get("cache", "")).strip().lower() or "n/a"
+        if cache in {"-", "na", "none", "null"}:
+            cache = "n/a"
+        if cache not in {"hit", "miss", "stale", "n/a"}:
+            cache = "n/a"
         result = str(row.get("result", "")).strip().lower() or "-"
         if result not in {"ok", "fail", "-"}:
             result = "-"
@@ -148,7 +190,7 @@ def _build_auth_table_html(rows: list[dict[str, str]], empty_message: str) -> st
         "hit": "cache-hit",
         "miss": "cache-miss",
         "stale": "cache-stale",
-        "-": "cache-na",
+        "n/a": "cache-na",
     }
     result_colors = {
         "ok": "result-ok",
@@ -156,23 +198,49 @@ def _build_auth_table_html(rows: list[dict[str, str]], empty_message: str) -> st
         "-": "result-na",
     }
 
+    badge_inline = {
+        "cache-hit": "background:#d1fae5;color:#065f46;",
+        "cache-miss": "background:#dbeafe;color:#1e40af;",
+        "cache-stale": "background:#ffedd5;color:#9a3412;",
+        "cache-na": "background:#e5e7eb;color:#4b5563;",
+        "result-ok": "background:#ccfbf1;color:#115e59;",
+        "result-fail": "background:#fee2e2;color:#991b1b;",
+        "result-na": "background:#e5e7eb;color:#4b5563;",
+    }
+    th_style = (
+        "border-bottom:1px solid #e7edf4;padding:9px 10px;text-align:left;vertical-align:middle;"
+        "font-size:12px;line-height:1.4;color:#234767;background:#f5f9ff;font-weight:700;"
+        "letter-spacing:.3px;text-transform:uppercase;"
+    )
+    td_style = (
+        "border-bottom:1px solid #e7edf4;padding:9px 10px;text-align:left;vertical-align:middle;"
+        "font-size:13px;line-height:1.45;color:#1f3a57;word-break:break-word;"
+    )
+    badge_base = (
+        "display:inline-block;border-radius:999px;padding:2px 8px;font-size:11px;"
+        "font-weight:700;letter-spacing:.2px;text-transform:uppercase;"
+    )
+
     body = []
     for row in rows:
         cache_cls = status_colors.get(row["cache"], "cache-na")
         result_cls = result_colors.get(row["result"], "result-na")
+        cache_inline = badge_inline.get(cache_cls, badge_inline["cache-na"])
+        result_inline = badge_inline.get(result_cls, badge_inline["result-na"])
         body.append(
             "<tr>"
-            f"<td>{escape(row['account'])}</td>"
-            f"<td>{escape(row['method'])}</td>"
-            f"<td><span class=\"badge {cache_cls}\">{escape(row['cache'])}</span></td>"
-            f"<td><span class=\"badge {result_cls}\">{escape(row['result'])}</span></td>"
-            f"<td>{escape(row['detail'])}</td>"
+            f"<td style=\"{td_style}\">{escape(row['account'])}</td>"
+            f"<td style=\"{td_style}\">{escape(row['method'])}</td>"
+            f"<td style=\"{td_style}\"><span class=\"badge {cache_cls}\" style=\"{badge_base}{cache_inline}\">{escape(row['cache'])}</span></td>"
+            f"<td style=\"{td_style}\"><span class=\"badge {result_cls}\" style=\"{badge_base}{result_inline}\">{escape(row['result'])}</span></td>"
+            f"<td style=\"{td_style}\">{escape(row['detail'])}</td>"
             "</tr>"
         )
 
     return (
-        '<div class="table-wrap">'
-        '<table class="auth-table">'
+        '<div class="table-wrap" style="overflow:auto;border:1px solid #d8e4f0;border-radius:10px;background:#fff;">'
+        '<table class="auth-table" cellpadding="0" cellspacing="0" role="presentation" '
+        'style="width:100%;border-collapse:collapse;table-layout:fixed;min-width:640px;">'
         "<colgroup>"
         '<col class="col-account" />'
         '<col class="col-method" />'
@@ -182,11 +250,11 @@ def _build_auth_table_html(rows: list[dict[str, str]], empty_message: str) -> st
         "</colgroup>"
         "<thead>"
         "<tr>"
-        "<th>Account</th>"
-        "<th>Auth Method</th>"
-        "<th>Cache</th>"
-        "<th>Result</th>"
-        "<th>Detail</th>"
+        f"<th style=\"{th_style}width:24%;\">Account</th>"
+        f"<th style=\"{th_style}width:18%;\">Auth Method</th>"
+        f"<th style=\"{th_style}width:11%;\">Cache</th>"
+        f"<th style=\"{th_style}width:11%;\">Result</th>"
+        f"<th style=\"{th_style}width:36%;\">Detail</th>"
         "</tr>"
         "</thead>"
         f"<tbody>{''.join(body)}</tbody>"
@@ -205,9 +273,11 @@ def _format_cache_rows(rows: list[dict[str, str]], max_rows: int = 20) -> tuple[
             continue
         account = str(row.get("account", "")).strip() or "-"
         method = str(row.get("method", "")).strip() or "-"
-        cache = str(row.get("cache", "")).strip().lower() or "-"
-        if cache not in {"hit", "miss", "stale", "-"}:
-            cache = "-"
+        cache = str(row.get("cache", "")).strip().lower() or "n/a"
+        if cache in {"-", "na", "none", "null"}:
+            cache = "n/a"
+        if cache not in {"hit", "miss", "stale", "n/a"}:
+            cache = "n/a"
         result = str(row.get("result", "")).strip().lower() or "-"
         if result not in {"ok", "fail", "-"}:
             result = "-"
@@ -227,6 +297,36 @@ def _format_cache_rows(rows: list[dict[str, str]], max_rows: int = 20) -> tuple[
     return shown, extra
 
 
+def _escape_markdown_cell(value: str) -> str:
+    text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+    if not text:
+        return "-"
+    return text.replace("|", "\\|")
+
+
+def _build_text_table(rows: list[dict[str, str]]) -> list[str]:
+    data_rows = rows or [{"account": "-", "method": "-", "cache": "n/a", "result": "-", "detail": "-"}]
+    lines = [
+        "| Account | Auth Method | Cache | Result | Detail |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for row in data_rows:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _escape_markdown_cell(row.get("account", "-")),
+                    _escape_markdown_cell(row.get("method", "-")),
+                    _escape_markdown_cell(row.get("cache", "n/a")),
+                    _escape_markdown_cell(row.get("result", "-")),
+                    _escape_markdown_cell(row.get("detail", "-")),
+                ]
+            )
+            + " |"
+        )
+    return lines
+
+
 def _build_cache_table_html(rows: list[dict[str, str]]) -> str:
     shown, extra = _format_cache_rows(rows, max_rows=24)
     if not shown:
@@ -236,7 +336,7 @@ def _build_cache_table_html(rows: list[dict[str, str]]) -> str:
         "hit": "cache-hit",
         "miss": "cache-miss",
         "stale": "cache-stale",
-        "-": "cache-na",
+        "n/a": "cache-na",
     }
     result_colors = {
         "ok": "result-ok",
@@ -323,7 +423,7 @@ def build_summary_html(
     reason_html = _build_tag_list_html(reasons or [], max_items=6)
     table_source = auth_rows or cache_rows or []
     if not table_source and cache_items:
-        table_source = [{"account": "-", "method": "-", "cache": "-", "result": "-", "detail": item} for item in cache_items]
+        table_source = [{"account": "-", "method": "-", "cache": "n/a", "result": "-", "detail": item} for item in cache_items]
     normalized_rows, extra_rows = _format_auth_rows(table_source, max_rows=48)
     success_rows = [row for row in normalized_rows if row["result"] == "ok"]
     fail_rows = [row for row in normalized_rows if row["result"] == "fail"]
@@ -332,7 +432,7 @@ def build_summary_html(
             {
                 "account": f"... (+{extra_rows} more rows)",
                 "method": "-",
-                "cache": "-",
+                "cache": "n/a",
                 "result": "-",
                 "detail": "-",
             }
@@ -657,55 +757,36 @@ def build_summary_message(
     if reasons:
         lines.append(f"trigger: {_format_items(reasons, max_items=6)}")
 
-    rows_for_text = auth_rows or cache_rows
-    if rows_for_text:
-        shown, extra = _format_auth_rows(rows_for_text, max_rows=20)
-        if shown:
-            success_rows = [row for row in shown if row["result"] == "ok"]
-            fail_rows = [row for row in shown if row["result"] == "fail"]
-            lines.append("auth_success:")
-            if success_rows:
-                for row in success_rows:
-                    lines.append(
-                        f"- {row['account']} | {row['method']} | cache={row['cache']} | result={row['result']} | {row['detail']}"
-                    )
-            else:
-                lines.append("- -")
-            lines.append("auth_failed:")
-            if fail_rows:
-                for row in fail_rows:
-                    lines.append(
-                        f"- {row['account']} | {row['method']} | cache={row['cache']} | result={row['result']} | {row['detail']}"
-                    )
-            else:
-                lines.append("- -")
-            if extra > 0:
-                lines.append(f"- ... (+{extra} more rows)")
-    else:
-        if failed_items:
-            lines.append(f"failed_accounts: {_format_items(failed_items, max_items=None)}")
+    table_source = auth_rows or cache_rows or []
+    if not table_source and cache_items:
+        table_source = [{"account": "-", "method": "-", "cache": "n/a", "result": "-", "detail": item} for item in cache_items]
+    if not table_source:
+        for item in highlight_items or []:
+            table_source.append({"account": "-", "method": "-", "cache": "n/a", "result": "ok", "detail": item})
+        for item in balance_items or []:
+            table_source.append({"account": "-", "method": "-", "cache": "n/a", "result": "ok", "detail": item})
+        for item in failed_items or []:
+            table_source.append({"account": "-", "method": "-", "cache": "n/a", "result": "fail", "detail": item})
+        for item in partial_items or []:
+            table_source.append({"account": "-", "method": "-", "cache": "n/a", "result": "fail", "detail": item})
 
-        if partial_items:
-            lines.append(f"partial_accounts: {_format_items(partial_items, max_items=None)}")
+    shown, extra = _format_auth_rows(table_source, max_rows=48)
+    success_rows = [row for row in shown if row["result"] == "ok"]
+    fail_rows = [row for row in shown if row["result"] == "fail"]
+    if extra > 0:
+        fail_rows.append(
+            {
+                "account": f"... (+{extra} more rows)",
+                "method": "-",
+                "cache": "n/a",
+                "result": "-",
+                "detail": "-",
+            }
+        )
 
-        if highlight_items:
-            lines.append(f"highlights: {_format_items(highlight_items, max_items=None)}")
-
-    if balance_items:
-        lines.append(f"balances: {_format_items(balance_items, max_items=None)}")
-
-    if cache_items and not rows_for_text:
-        lines.append(f"cache_status: {_format_items(cache_items, max_items=10)}")
-
-    if cache_rows and not rows_for_text:
-        shown, extra = _format_cache_rows(cache_rows, max_rows=20)
-        if shown:
-            lines.append("cache_status:")
-            for row in shown:
-                lines.append(
-                    f"- {row['account']} | {row['method']} | cache={row['cache']} | result={row['result']} | {row['detail']}"
-                )
-            if extra > 0:
-                lines.append(f"- ... (+{extra} more rows)")
+    lines.append("successful_auth:")
+    lines.extend(_build_text_table(success_rows))
+    lines.append("failed_auth:")
+    lines.extend(_build_text_table(fail_rows))
 
     return "\n".join(lines)
