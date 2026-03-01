@@ -724,7 +724,7 @@ class AppConfig:
             ),
             "duckcoding": ProviderConfig(
                 name="duckcoding",
-                origin="https://duckcoding.com",
+                origin="https://duckcoding.ai",
                 login_path="/login",
                 status_path="/api/status",
                 auth_state_path="/api/oauth/state",
@@ -743,7 +743,7 @@ class AppConfig:
             ),
             "free-duckcoding": ProviderConfig(
                 name="free-duckcoding",
-                origin="https://free.duckcoding.com",
+                origin="https://free.duckcoding.ai",
                 login_path="/login",
                 status_path="/api/status",
                 auth_state_path="/api/oauth/state",
