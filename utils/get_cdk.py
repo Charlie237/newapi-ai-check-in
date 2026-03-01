@@ -40,7 +40,14 @@ RUNAWAYTIME_LOGIN_BUTTON_SELECTORS = [
     "button:has-text('LINUXDO')",
     "a:has-text('LINUXDO')",
 ]
-RUNAWAYTIME_APPROVE_SELECTOR = "a[href^='/oauth2/approve']"
+RUNAWAYTIME_APPROVE_SELECTORS = [
+    "a[href^='/oauth2/approve']",
+    "button:has-text('Authorize')",
+    "button:has-text('Allow')",
+    "button:has-text('Continue')",
+    "button:has-text('同意')",
+    "button:has-text('授权')",
+]
 
 
 def _normalize_cookie_dict(cookies_data) -> dict:
@@ -163,11 +170,21 @@ async def _get_runawaytime_fuli_cookies_via_linuxdo(
     os.makedirs("storage-states", exist_ok=True)
     username_hash = hashlib.sha256(username.encode("utf-8")).hexdigest()[:8]
     cache_file_path = f"storage-states/runawaytime_fuli_{username_hash}.json"
-    storage_state = cache_file_path if os.path.exists(cache_file_path) else None
+    shared_linuxdo_cache_file = f"storage-states/linuxdo_{username_hash}_storage_state.json"
+
+    storage_state = None
+    storage_state_source = "none"
+    if os.path.exists(cache_file_path):
+        storage_state = cache_file_path
+        storage_state_source = "runawaytime_fuli"
+    elif os.path.exists(shared_linuxdo_cache_file):
+        # Reuse provider LinuxDo session cache to avoid hitting login hCaptcha again.
+        storage_state = shared_linuxdo_cache_file
+        storage_state_source = "linuxdo_shared"
 
     print(
         f"ℹ️ {account_name}: Attempting fuli.hxi.me LinuxDo login "
-        f"(cache={'hit' if storage_state else 'miss'})"
+        f"(cache={'hit' if storage_state else 'miss'}, source={storage_state_source})"
     )
 
     proxy_args = {}
@@ -204,6 +221,26 @@ async def _get_runawaytime_fuli_cookies_via_linuxdo(
                             await context.storage_state(path=cache_file_path)
                             print(f"✅ {account_name}: fuli session restored from cache")
                             return cookies
+
+                    # Force OAuth jump once to consume reused linuxdo cache quickly.
+                    if storage_state:
+                        try:
+                            await page.goto(
+                                f"{RUNAWAYTIME_FULI_BASE_URL}/api/oauth/linuxdo",
+                                wait_until="domcontentloaded",
+                            )
+                            await page.wait_for_timeout(1200)
+                            if await _is_runawaytime_fuli_logged_in(page):
+                                cookies = await _extract_fuli_cookie_dict(context)
+                                if cookies:
+                                    await context.storage_state(path=cache_file_path)
+                                    print(
+                                        f"✅ {account_name}: fuli session restored via oauth jump "
+                                        f"(source={storage_state_source})"
+                                    )
+                                    return cookies
+                        except Exception:
+                            pass
 
                     # Fresh login flow.
                     await page.goto(f"{RUNAWAYTIME_FULI_BASE_URL}/login", wait_until="domcontentloaded")
@@ -262,13 +299,46 @@ async def _get_runawaytime_fuli_cookies_via_linuxdo(
                             except Exception:
                                 pass
 
+                        if "linux.do/login" in current_url and login_submitted:
+                            try:
+                                content_lower = (await page.content()).lower()
+                                if (
+                                    "human verification" in content_lower
+                                    or "i am human" in content_lower
+                                    or "hcaptcha" in content_lower
+                                ):
+                                    print(
+                                        f"⚠️ {account_name}: LinuxDo login requires interactive hCaptcha, "
+                                        "cannot continue fuli auto-login with password flow"
+                                    )
+                                    await take_screenshot(
+                                        page, "runawaytime_fuli_login_hcaptcha_required", account_name
+                                    )
+                                    return {}
+                            except Exception:
+                                pass
+
                         if "connect.linux.do" in current_url:
                             try:
-                                approve = page.locator(RUNAWAYTIME_APPROVE_SELECTOR).first
-                                if await approve.count() > 0:
-                                    await approve.click(timeout=4000)
+                                clicked_approve, _ = await _click_first(page, RUNAWAYTIME_APPROVE_SELECTORS)
+                                if clicked_approve:
                                     approve_clicked = True
                                     await page.wait_for_timeout(1200)
+                            except Exception:
+                                pass
+
+                        # Sometimes callback chain gets stuck on /login; re-enter oauth flow periodically.
+                        if (
+                            current_url.startswith(f"{RUNAWAYTIME_FULI_BASE_URL}/login")
+                            and _ > 0
+                            and _ % 25 == 0
+                        ):
+                            try:
+                                await page.goto(
+                                    f"{RUNAWAYTIME_FULI_BASE_URL}/api/oauth/linuxdo",
+                                    wait_until="domcontentloaded",
+                                )
+                                await page.wait_for_timeout(1200)
                             except Exception:
                                 pass
 
