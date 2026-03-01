@@ -160,6 +160,37 @@ async def _extract_fuli_cookie_dict(context) -> dict:
     return result
 
 
+async def _get_runawaytime_fuli_logged_cookies(page, context) -> tuple[dict, str]:
+    """Try to confirm fuli login and return cookies with detection reason."""
+    try:
+        if await _is_runawaytime_fuli_logged_in(page):
+            cookies = await _extract_fuli_cookie_dict(context)
+            if cookies:
+                return cookies, "api"
+    except Exception:
+        pass
+
+    # Fallback heuristic: API format may change while session is already established.
+    try:
+        cookies = await _extract_fuli_cookie_dict(context)
+        if not cookies or not cookies.get("session"):
+            return {}, ""
+
+        current_url = (page.url or "").lower()
+        if not current_url.startswith(RUNAWAYTIME_FULI_BASE_URL):
+            return {}, ""
+        if "/login" in current_url or "connect.linux.do" in current_url:
+            return {}, ""
+
+        page_text = await page.evaluate("() => (document && document.body && document.body.innerText) || ''")
+        if any(token in page_text for token in ("个人设置", "退出", "登出", "签到功能已迁移")):
+            return cookies, "session+dom"
+    except Exception:
+        pass
+
+    return {}, ""
+
+
 async def _get_runawaytime_fuli_cookies_via_linuxdo(
     account_name: str,
     username: str,
@@ -215,12 +246,14 @@ async def _get_runawaytime_fuli_cookies_via_linuxdo(
                     # Try cache first.
                     await page.goto(f"{RUNAWAYTIME_FULI_BASE_URL}/", wait_until="domcontentloaded")
                     await page.wait_for_timeout(1200)
-                    if await _is_runawaytime_fuli_logged_in(page):
-                        cookies = await _extract_fuli_cookie_dict(context)
-                        if cookies:
-                            await context.storage_state(path=cache_file_path)
-                            print(f"✅ {account_name}: fuli session restored from cache")
-                            return cookies
+                    cookies, login_reason = await _get_runawaytime_fuli_logged_cookies(page, context)
+                    if cookies:
+                        await context.storage_state(path=cache_file_path)
+                        print(
+                            f"✅ {account_name}: fuli session restored from cache "
+                            f"(reason={login_reason})"
+                        )
+                        return cookies
 
                     # Force OAuth jump once to consume reused linuxdo cache quickly.
                     if storage_state:
@@ -230,15 +263,14 @@ async def _get_runawaytime_fuli_cookies_via_linuxdo(
                                 wait_until="domcontentloaded",
                             )
                             await page.wait_for_timeout(1200)
-                            if await _is_runawaytime_fuli_logged_in(page):
-                                cookies = await _extract_fuli_cookie_dict(context)
-                                if cookies:
-                                    await context.storage_state(path=cache_file_path)
-                                    print(
-                                        f"✅ {account_name}: fuli session restored via oauth jump "
-                                        f"(source={storage_state_source})"
-                                    )
-                                    return cookies
+                            cookies, login_reason = await _get_runawaytime_fuli_logged_cookies(page, context)
+                            if cookies:
+                                await context.storage_state(path=cache_file_path)
+                                print(
+                                    f"✅ {account_name}: fuli session restored via oauth jump "
+                                    f"(source={storage_state_source}, reason={login_reason})"
+                                )
+                                return cookies
                         except Exception:
                             pass
 
@@ -267,16 +299,15 @@ async def _get_runawaytime_fuli_cookies_via_linuxdo(
                     approve_clicked = False
 
                     for _ in range(170):
-                        if await _is_runawaytime_fuli_logged_in(page):
-                            cookies = await _extract_fuli_cookie_dict(context)
-                            if cookies:
-                                await context.storage_state(path=cache_file_path)
-                                print(
-                                    f"✅ {account_name}: fuli LinuxDo login successful "
-                                    f"(trigger={selector}, login_submitted={login_submitted}, "
-                                    f"approve_clicked={approve_clicked})"
-                                )
-                                return cookies
+                        cookies, login_reason = await _get_runawaytime_fuli_logged_cookies(page, context)
+                        if cookies:
+                            await context.storage_state(path=cache_file_path)
+                            print(
+                                f"✅ {account_name}: fuli LinuxDo login successful "
+                                f"(trigger={selector}, login_submitted={login_submitted}, "
+                                f"approve_clicked={approve_clicked}, reason={login_reason})"
+                            )
+                            return cookies
 
                         if await _is_cf_challenge_page(page):
                             try:
