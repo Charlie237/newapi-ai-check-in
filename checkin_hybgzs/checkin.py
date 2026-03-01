@@ -30,6 +30,12 @@ CHECKIN_BUTTON_SELECTORS = [
     "[role='button']:has-text('\u7acb\u5373\u7b7e\u5230')",
     "button:has-text('\u7b7e\u5230')",
     "[role='button']:has-text('\u7b7e\u5230')",
+    "button:has-text('\u53bb\u7b7e\u5230')",
+    "[role='button']:has-text('\u53bb\u7b7e\u5230')",
+    "button:has-text('\u7acb\u5373\u9886\u53d6')",
+    "[role='button']:has-text('\u7acb\u5373\u9886\u53d6')",
+    "button:has-text('\u9a6c\u4e0a\u7b7e\u5230')",
+    "[role='button']:has-text('\u9a6c\u4e0a\u7b7e\u5230')",
 ]
 
 LOGIN_BUTTON_SELECTORS = [
@@ -763,6 +769,7 @@ class HybgzsCheckIn:
 
         await page.goto(f"{BASE_URL}/gas-station/checkin", wait_until="domcontentloaded")
         await page.wait_for_timeout(1200)
+        await self._dismiss_blocking_modal(page)
 
         try:
             content = (await page.content()).lower()
@@ -771,15 +778,55 @@ class HybgzsCheckIn:
         except Exception:
             pass
 
-        clicked, selector = await self._click_first(page, CHECKIN_BUTTON_SELECTORS)
+        clicked = False
+        selector = ""
+        for _ in range(3):
+            clicked, selector = await self._click_first(page, CHECKIN_BUTTON_SELECTORS)
+            if clicked:
+                break
+            await self._dismiss_blocking_modal(page)
+            await page.wait_for_timeout(700)
+
         if not clicked:
+            # UI may change or button may be blocked by modal; fallback to API submit.
+            api_submit = await self._fetch_json(page, "/api/checkin", method="POST")
+            api_status = api_submit.get("status")
+            api_payload = api_submit.get("json") if isinstance(api_submit.get("json"), dict) else {}
+            api_text = str(
+                api_payload.get("error")
+                or api_payload.get("message")
+                or api_submit.get("text")
+                or ""
+            )
+
+            if api_status != 200:
+                need_verify = self._text_contains_turnstile_hint(api_text) or await self._is_turnstile_modal_visible(page)
+                if not need_verify:
+                    need_verify = await self._has_turnstile_markers(page)
+                if need_verify:
+                    solved = await self._solve_turnstile_checkbox(page)
+                    if solved:
+                        await page.wait_for_timeout(900)
+                        api_submit = await self._fetch_json(page, "/api/checkin", method="POST")
+                        api_status = api_submit.get("status")
+                        api_payload = api_submit.get("json") if isinstance(api_submit.get("json"), dict) else {}
+                        api_text = str(
+                            api_payload.get("error")
+                            or api_payload.get("message")
+                            or api_submit.get("text")
+                            or ""
+                        )
+
+            await page.wait_for_timeout(1200)
             ok2, done2, err2 = await self._query_checkin_today(page)
             if err2 and "http=503" in err2:
                 return True, {"skipped": True, "maintenance": True, "message": "site under maintenance (503)"}
             if ok2 and done2:
-                return True, {"already": True, "message": "already checked in today"}
+                return True, {"already": False, "selector": "api:/api/checkin", "message": "checkin completed (api fallback)"}
+            if "already" in api_text.lower() or "\u5df2\u7b7e\u5230" in api_text:
+                return True, {"already": True, "message": "already checked in today (api fallback)"}
             await take_screenshot(page, "hybgzs_checkin_button_not_found", self.account_name)
-            return False, {"error": f"checkin button not found ({err2 or err})"}
+            return False, {"error": f"checkin button not found (api_fallback_status={api_status}; {err2 or err})"}
 
         await page.wait_for_timeout(1200)
         solved_turnstile = False
