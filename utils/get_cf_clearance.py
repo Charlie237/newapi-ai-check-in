@@ -8,9 +8,12 @@ Cloudflare cf_clearance cookie 获取模块
 from __future__ import annotations
 
 import tempfile
+
 from camoufox.async_api import AsyncCamoufox
 from playwright_captcha import CaptchaType, ClickSolver, FrameworkType
+
 from utils.get_headers import get_browser_headers, print_browser_headers
+
 
 async def get_cf_clearance(
     url: str,
@@ -73,7 +76,7 @@ async def get_cf_clearance(
                     max_attempts=5,
                     attempt_delay=3
                 ) as solver:
-                    await page.goto(url, wait_until="networkidle")
+                    await page.goto(url, wait_until="domcontentloaded", timeout=60000)
                     await page.wait_for_timeout(5000)
                     
                     # 检查是否在 Cloudflare 验证页面
@@ -106,7 +109,15 @@ async def get_cf_clearance(
                     cookie_name = cookie.get("name")
                     cookie_value = cookie.get("value")
                     print(f"  📚 Cookie: {cookie_name} (value: {cookie_value[:50] if cookie_value and len(cookie_value) > 50 else cookie_value}...)")
-                    if cookie_name in ["cf_clearance", "__cf_bm", "cf_chl_2", "cf_chl_prog"] and cookie_value is not None:
+                    if (
+                        cookie_name
+                        and cookie_value is not None
+                        and (
+                            cookie_name == "cf_clearance"
+                            or cookie_name.startswith("__cf")
+                            or cookie_name.startswith("cf_")
+                        )
+                    ):
                         cf_cookies[cookie_name] = cookie_value
                 
                 print(f"ℹ️ {account_name}: Got {len(cf_cookies)} Cloudflare cookies")
@@ -117,6 +128,12 @@ async def get_cf_clearance(
                 
                 # 检查是否获取到 cf_clearance cookie
                 if "cf_clearance" not in cf_cookies:
+                    if cf_cookies:
+                        print(
+                            f"⚠️ {account_name}: cf_clearance cookie not obtained, "
+                            f"using partial Cloudflare cookies: {list(cf_cookies.keys())}"
+                        )
+                        return cf_cookies, browser_headers
                     print(f"⚠️ {account_name}: cf_clearance cookie not obtained")
                     return None, browser_headers
                 

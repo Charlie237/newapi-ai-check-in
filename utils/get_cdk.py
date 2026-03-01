@@ -15,17 +15,17 @@ import hashlib
 import json
 import os
 import time
-from typing import TYPE_CHECKING, Generator, AsyncGenerator
-from urllib.parse import urlparse, parse_qs
+from typing import TYPE_CHECKING, AsyncGenerator
+from urllib.parse import parse_qs, urlparse
 
 from camoufox.async_api import AsyncCamoufox
 from curl_cffi import requests as curl_requests
 from playwright_captcha import CaptchaType, ClickSolver, FrameworkType
 
-from utils.browser_utils import take_screenshot, save_page_content_to_file
-from utils.http_utils import proxy_resolve, response_resolve
-from utils.get_headers import get_curl_cffi_impersonate
+from utils.browser_utils import save_page_content_to_file, take_screenshot
 from utils.get_cf_clearance import get_cf_clearance
+from utils.get_headers import get_curl_cffi_impersonate
+from utils.http_utils import proxy_resolve, response_resolve
 
 if TYPE_CHECKING:
     from utils.config import AccountConfig
@@ -284,6 +284,68 @@ async def _get_runawaytime_fuli_cookies_via_linuxdo(
         return {}
 
 
+def _validate_runawaytime_fuli_cookies(
+    account_name: str,
+    cookies: dict,
+    http_proxy: str | None,
+) -> bool:
+    """Validate whether a cookie set can access fuli.hxi.me check-in API."""
+    if not cookies:
+        return False
+
+    session = curl_requests.Session(proxy=http_proxy, timeout=20)
+    try:
+        session.cookies.update(cookies)
+        session.cookies.set("i18next", "en")
+        headers = {
+            "accept": "application/json, text/plain, */*",
+            "accept-language": "en,en-US;q=0.9,zh;q=0.8",
+            "cache-control": "no-cache",
+            "pragma": "no-cache",
+            "referer": "https://fuli.hxi.me/",
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
+            "user-agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+            ),
+        }
+        resp = session.get("https://fuli.hxi.me/api/checkin/status", headers=headers, timeout=20)
+        if resp.status_code != 200:
+            print(
+                f"⚠️ {account_name}: runtime cookies rejected for fuli "
+                f"(status={resp.status_code})"
+            )
+            return False
+
+        data = response_resolve(resp, "validate_runawaytime_fuli_cookies", account_name)
+        if not isinstance(data, dict):
+            print(f"⚠️ {account_name}: runtime cookies rejected for fuli (invalid json)")
+            return False
+
+        # fuli API normally returns keys like checked/remaining/success.
+        if any(key in data for key in ("checked", "remaining", "success")):
+            return True
+        if isinstance(data.get("data"), dict):
+            nested = data["data"]
+            if any(key in nested for key in ("checked", "remaining", "success")):
+                return True
+
+        message = str(data.get("message", "")).lower()
+        if "未登录" in message or "login" in message or "unauthorized" in message:
+            print(f"⚠️ {account_name}: runtime cookies rejected for fuli (not logged in)")
+            return False
+
+        print(f"⚠️ {account_name}: runtime cookies rejected for fuli (unexpected payload)")
+        return False
+    except Exception as exc:
+        print(f"⚠️ {account_name}: runtime cookies validation error for fuli - {exc}")
+        return False
+    finally:
+        session.close()
+
+
 async def get_runawaytime_cdk(
     account_config: "AccountConfig",
     runtime_cookies: dict | str | None = None,
@@ -313,7 +375,11 @@ async def get_runawaytime_cdk(
             f"ℹ️ {account_name}: trying runtime cookies from check-in flow "
             f"(keys={list(runtime_cookies_dict.keys())[:6]})"
         )
-        fuli_cookies = runtime_cookies_dict
+        if _validate_runawaytime_fuli_cookies(account_name, runtime_cookies_dict, http_proxy):
+            print(f"✅ {account_name}: runtime cookies accepted for fuli")
+            fuli_cookies = runtime_cookies_dict
+        else:
+            print(f"⚠️ {account_name}: runtime cookies not valid for fuli, fallback to LinuxDo/manual cookies")
 
     linux_do_accounts = account_config.linux_do or []
     max_wheel_spins = _to_non_negative_int(account_config.get("runaway_max_wheel_spins", 0), default=0)
