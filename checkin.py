@@ -10,7 +10,7 @@ import json
 import os
 import tempfile
 from datetime import datetime
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 from camoufox.async_api import AsyncCamoufox
 from curl_cffi import requests as curl_requests
@@ -733,11 +733,75 @@ class CheckIn:
                 "error": f"Failed to get user info, {e}",
             }
 
+    def _append_turnstile_to_url(self, url: str, turnstile_token: str, include_empty: bool = False) -> str:
+        """在 URL 上附加 turnstile 参数。"""
+        if not turnstile_token and not include_empty:
+            return url
+
+        parsed = urlparse(url)
+        query_params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query_params["turnstile"] = turnstile_token or ""
+        return parsed._replace(query=urlencode(query_params, doseq=True)).geturl()
+
+    def _get_turnstile_token_from_status(
+        self,
+        session: curl_requests.Session,
+        headers: dict,
+        action_tag: str,
+    ) -> str:
+        """从 /api/status 读取 Turnstile token。"""
+        try:
+            status_resp = session.get(self.provider_config.get_status_url(), headers=headers, timeout=30)
+            status_json = response_resolve(status_resp, f"turnstile_status_{action_tag}", self.account_name)
+            if not status_json or not status_json.get("success"):
+                return ""
+
+            status_data = status_json.get("data") or {}
+            turnstile_check = bool(status_data.get("turnstile_check"))
+            turnstile_token = str(status_data.get("turnstile_token") or "").strip()
+
+            if turnstile_check and turnstile_token:
+                print(f"ℹ️ {self.account_name}: Got turnstile token from status for {action_tag}")
+                return turnstile_token
+            if turnstile_check:
+                print(f"⚠️ {self.account_name}: Turnstile is enabled but token is empty in status")
+            return ""
+        except Exception as status_err:
+            print(f"⚠️ {self.account_name}: Failed to read status for {action_tag}: {status_err}")
+            return ""
+
+    def _execute_check_in_with_turnstile_retry(
+        self,
+        session: curl_requests.Session,
+        headers: dict,
+        api_user: str | int,
+    ) -> dict:
+        """执行签到；若提示 Turnstile，则尝试读取 token 后重试一次。"""
+        check_in_result = self.execute_check_in(session, headers, api_user)
+        if check_in_result.get("success") or not check_in_result.get("requires_turnstile"):
+            return check_in_result
+
+        turnstile_token = self._get_turnstile_token_from_status(session, headers, "checkin_retry")
+        if not turnstile_token:
+            return check_in_result
+
+        print(f"🔄 {self.account_name}: Retrying check-in with turnstile token")
+        return self.execute_check_in(session, headers, api_user, turnstile_token=turnstile_token)
+
+    def _should_skip_turnstile_hard_fail(self, check_in_result: dict) -> bool:
+        """runawaytime 需要 topup 时，Turnstile 拦截不终止整个流程。"""
+        return bool(
+            check_in_result.get("requires_turnstile")
+            and self.provider_config.name == "runawaytime"
+            and self.provider_config.needs_manual_topup()
+        )
+
     def execute_check_in(
         self,
         session: curl_requests.Session,
         headers: dict,
         api_user: str | int,
+        turnstile_token: str = "",
     ) -> dict:
         """执行签到请求
         
@@ -753,6 +817,8 @@ class CheckIn:
         if not check_in_url:
             print(f"❌ {self.account_name}: No check-in URL configured")
             return {"success": False, "error": "No check-in URL configured"}
+        if turnstile_token:
+            check_in_url = self._append_turnstile_to_url(check_in_url, turnstile_token)
 
         response = session.post(check_in_url, headers=checkin_headers, timeout=30)
 
@@ -1092,22 +1158,8 @@ class CheckIn:
             login_payload = {'username': username, 'password': password}
             login_url = f'{self.provider_config.origin}/api/user/login'
 
-            # 尝试读取 status，兼容 turnstile 参数。
-            turnstile_token = ''
-            try:
-                status_resp = session.get(self.provider_config.get_status_url(), headers=headers, timeout=30)
-                status_json = response_resolve(status_resp, 'provider_password_status', self.account_name)
-                if status_json and status_json.get('success'):
-                    status_data = status_json.get('data', {})
-                    if status_data.get('turnstile_check'):
-                        turnstile_token = status_data.get('turnstile_token') or ''
-            except Exception as status_err:
-                print(f'⚠️ {self.account_name}: Failed to read status before password login: {status_err}')
-
-            if turnstile_token:
-                login_url = f'{login_url}?turnstile={turnstile_token}'
-            else:
-                login_url = f'{login_url}?turnstile='
+            turnstile_token = self._get_turnstile_token_from_status(session, headers, 'password_login')
+            login_url = self._append_turnstile_to_url(login_url, turnstile_token, include_empty=True)
 
             response = session.post(login_url, json=login_payload, headers=headers, timeout=30)
             login_json = response_resolve(response, 'password_login', self.account_name)
@@ -1211,13 +1263,9 @@ class CheckIn:
                         print(f"ℹ️ {self.account_name}: Already checked in today, skipping check-in")
                     else:
                         # 未签到，执行签到
-                        check_in_result = self.execute_check_in(session, headers, api_user)
+                        check_in_result = self._execute_check_in_with_turnstile_retry(session, headers, api_user)
                         if not check_in_result.get("success"):
-                            if (
-                                check_in_result.get("requires_turnstile")
-                                and self.provider_config.name == "runawaytime"
-                                and self.provider_config.needs_manual_topup()
-                            ):
+                            if self._should_skip_turnstile_hard_fail(check_in_result):
                                 print(
                                     f"⚠️ {self.account_name}: Check-in requires Turnstile, "
                                     "skip hard-fail and continue topup flow for runawaytime"
@@ -1234,13 +1282,9 @@ class CheckIn:
                             )
                 else:
                     # 没有配置签到状态查询函数，直接执行签到
-                    check_in_result = self.execute_check_in(session, headers, api_user)
+                    check_in_result = self._execute_check_in_with_turnstile_retry(session, headers, api_user)
                     if not check_in_result.get("success"):
-                        if (
-                            check_in_result.get("requires_turnstile")
-                            and self.provider_config.name == "runawaytime"
-                            and self.provider_config.needs_manual_topup()
-                        ):
+                        if self._should_skip_turnstile_hard_fail(check_in_result):
                             print(
                                 f"⚠️ {self.account_name}: Check-in requires Turnstile, "
                                 "skip hard-fail and continue topup flow for runawaytime"
