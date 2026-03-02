@@ -16,6 +16,10 @@ on:
         required: false
         type: boolean
 
+concurrency:
+  group: qaq-al-checkin-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   checkin:
     permissions:
@@ -79,6 +83,7 @@ jobs:
 
       - name: Restore storage-state cache
         uses: actions/cache/restore@v4
+        id: storage-state-restore
         with:
           path: |
             storage-states
@@ -88,6 +93,7 @@ jobs:
 
       - name: Restore balance-hash cache
         uses: actions/cache/restore@v4
+        id: balance-hash-restore
         with:
           path: |
             balance_hash_qaq_al.txt
@@ -122,7 +128,7 @@ jobs:
           uv run python -u checkin_qaq_al/main.py
 
       - name: Save storage-state cache
-        if: hashFiles('storage-states/*.json') != ''
+        if: hashFiles('storage-states/*.json') != '' && steps.storage-state-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |
@@ -130,7 +136,7 @@ jobs:
           key: storage-state-${{ hashFiles('storage-states/*.json') }}
 
       - name: Save balance-hash cache
-        if: hashFiles('balance_hash_qaq_al.txt') != ''
+        if: hashFiles('balance_hash_qaq_al.txt') != '' && steps.balance-hash-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |
