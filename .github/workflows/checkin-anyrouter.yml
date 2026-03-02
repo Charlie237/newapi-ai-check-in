@@ -127,7 +127,7 @@ jobs:
             throw "No accounts found for provider '$env:TARGET_PROVIDER'."
           }
 
-          $filteredJson = $filtered | ConvertTo-Json -Depth 100 -Compress
+          $filteredJson = ConvertTo-Json -InputObject @($filtered) -Depth 100 -Compress -AsArray
           Write-Host "Selected provider: $env:TARGET_PROVIDER, account count: $($filtered.Count)"
 
           $delimiter = "EOF_" + [Guid]::NewGuid().ToString("N")
