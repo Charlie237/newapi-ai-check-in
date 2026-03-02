@@ -15,17 +15,17 @@ import hashlib
 import json
 import os
 import time
-from typing import TYPE_CHECKING, Generator, AsyncGenerator
-from urllib.parse import urlparse, parse_qs
+from typing import TYPE_CHECKING, AsyncGenerator
+from urllib.parse import parse_qs, urlparse
 
 from camoufox.async_api import AsyncCamoufox
 from curl_cffi import requests as curl_requests
 from playwright_captcha import CaptchaType, ClickSolver, FrameworkType
 
-from utils.browser_utils import take_screenshot, save_page_content_to_file
-from utils.http_utils import proxy_resolve, response_resolve
-from utils.get_headers import get_curl_cffi_impersonate
+from utils.browser_utils import save_page_content_to_file, take_screenshot
 from utils.get_cf_clearance import get_cf_clearance
+from utils.get_headers import get_curl_cffi_impersonate
+from utils.http_utils import proxy_resolve, response_resolve
 
 if TYPE_CHECKING:
     from utils.config import AccountConfig
@@ -40,7 +40,14 @@ RUNAWAYTIME_LOGIN_BUTTON_SELECTORS = [
     "button:has-text('LINUXDO')",
     "a:has-text('LINUXDO')",
 ]
-RUNAWAYTIME_APPROVE_SELECTOR = "a[href^='/oauth2/approve']"
+RUNAWAYTIME_APPROVE_SELECTORS = [
+    "a[href^='/oauth2/approve']",
+    "button:has-text('Authorize')",
+    "button:has-text('Allow')",
+    "button:has-text('Continue')",
+    "button:has-text('同意')",
+    "button:has-text('授权')",
+]
 
 
 def _normalize_cookie_dict(cookies_data) -> dict:
@@ -153,6 +160,37 @@ async def _extract_fuli_cookie_dict(context) -> dict:
     return result
 
 
+async def _get_runawaytime_fuli_logged_cookies(page, context) -> tuple[dict, str]:
+    """Try to confirm fuli login and return cookies with detection reason."""
+    try:
+        if await _is_runawaytime_fuli_logged_in(page):
+            cookies = await _extract_fuli_cookie_dict(context)
+            if cookies:
+                return cookies, "api"
+    except Exception:
+        pass
+
+    # Fallback heuristic: API format may change while session is already established.
+    try:
+        cookies = await _extract_fuli_cookie_dict(context)
+        if not cookies or not cookies.get("session"):
+            return {}, ""
+
+        current_url = (page.url or "").lower()
+        if not current_url.startswith(RUNAWAYTIME_FULI_BASE_URL):
+            return {}, ""
+        if "/login" in current_url or "connect.linux.do" in current_url:
+            return {}, ""
+
+        page_text = await page.evaluate("() => (document && document.body && document.body.innerText) || ''")
+        if any(token in page_text for token in ("个人设置", "退出", "登出", "签到功能已迁移")):
+            return cookies, "session+dom"
+    except Exception:
+        pass
+
+    return {}, ""
+
+
 async def _get_runawaytime_fuli_cookies_via_linuxdo(
     account_name: str,
     username: str,
@@ -163,11 +201,21 @@ async def _get_runawaytime_fuli_cookies_via_linuxdo(
     os.makedirs("storage-states", exist_ok=True)
     username_hash = hashlib.sha256(username.encode("utf-8")).hexdigest()[:8]
     cache_file_path = f"storage-states/runawaytime_fuli_{username_hash}.json"
-    storage_state = cache_file_path if os.path.exists(cache_file_path) else None
+    shared_linuxdo_cache_file = f"storage-states/linuxdo_{username_hash}_storage_state.json"
+
+    storage_state = None
+    storage_state_source = "none"
+    if os.path.exists(cache_file_path):
+        storage_state = cache_file_path
+        storage_state_source = "runawaytime_fuli"
+    elif os.path.exists(shared_linuxdo_cache_file):
+        # Reuse provider LinuxDo session cache to avoid hitting login hCaptcha again.
+        storage_state = shared_linuxdo_cache_file
+        storage_state_source = "linuxdo_shared"
 
     print(
         f"ℹ️ {account_name}: Attempting fuli.hxi.me LinuxDo login "
-        f"(cache={'hit' if storage_state else 'miss'})"
+        f"(cache={'hit' if storage_state else 'miss'}, source={storage_state_source})"
     )
 
     proxy_args = {}
@@ -198,12 +246,33 @@ async def _get_runawaytime_fuli_cookies_via_linuxdo(
                     # Try cache first.
                     await page.goto(f"{RUNAWAYTIME_FULI_BASE_URL}/", wait_until="domcontentloaded")
                     await page.wait_for_timeout(1200)
-                    if await _is_runawaytime_fuli_logged_in(page):
-                        cookies = await _extract_fuli_cookie_dict(context)
-                        if cookies:
-                            await context.storage_state(path=cache_file_path)
-                            print(f"✅ {account_name}: fuli session restored from cache")
-                            return cookies
+                    cookies, login_reason = await _get_runawaytime_fuli_logged_cookies(page, context)
+                    if cookies:
+                        await context.storage_state(path=cache_file_path)
+                        print(
+                            f"✅ {account_name}: fuli session restored from cache "
+                            f"(reason={login_reason})"
+                        )
+                        return cookies
+
+                    # Force OAuth jump once to consume reused linuxdo cache quickly.
+                    if storage_state:
+                        try:
+                            await page.goto(
+                                f"{RUNAWAYTIME_FULI_BASE_URL}/api/oauth/linuxdo",
+                                wait_until="domcontentloaded",
+                            )
+                            await page.wait_for_timeout(1200)
+                            cookies, login_reason = await _get_runawaytime_fuli_logged_cookies(page, context)
+                            if cookies:
+                                await context.storage_state(path=cache_file_path)
+                                print(
+                                    f"✅ {account_name}: fuli session restored via oauth jump "
+                                    f"(source={storage_state_source}, reason={login_reason})"
+                                )
+                                return cookies
+                        except Exception:
+                            pass
 
                     # Fresh login flow.
                     await page.goto(f"{RUNAWAYTIME_FULI_BASE_URL}/login", wait_until="domcontentloaded")
@@ -230,16 +299,15 @@ async def _get_runawaytime_fuli_cookies_via_linuxdo(
                     approve_clicked = False
 
                     for _ in range(170):
-                        if await _is_runawaytime_fuli_logged_in(page):
-                            cookies = await _extract_fuli_cookie_dict(context)
-                            if cookies:
-                                await context.storage_state(path=cache_file_path)
-                                print(
-                                    f"✅ {account_name}: fuli LinuxDo login successful "
-                                    f"(trigger={selector}, login_submitted={login_submitted}, "
-                                    f"approve_clicked={approve_clicked})"
-                                )
-                                return cookies
+                        cookies, login_reason = await _get_runawaytime_fuli_logged_cookies(page, context)
+                        if cookies:
+                            await context.storage_state(path=cache_file_path)
+                            print(
+                                f"✅ {account_name}: fuli LinuxDo login successful "
+                                f"(trigger={selector}, login_submitted={login_submitted}, "
+                                f"approve_clicked={approve_clicked}, reason={login_reason})"
+                            )
+                            return cookies
 
                         if await _is_cf_challenge_page(page):
                             try:
@@ -262,13 +330,46 @@ async def _get_runawaytime_fuli_cookies_via_linuxdo(
                             except Exception:
                                 pass
 
+                        if "linux.do/login" in current_url and login_submitted:
+                            try:
+                                content_lower = (await page.content()).lower()
+                                if (
+                                    "human verification" in content_lower
+                                    or "i am human" in content_lower
+                                    or "hcaptcha" in content_lower
+                                ):
+                                    print(
+                                        f"⚠️ {account_name}: LinuxDo login requires interactive hCaptcha, "
+                                        "cannot continue fuli auto-login with password flow"
+                                    )
+                                    await take_screenshot(
+                                        page, "runawaytime_fuli_login_hcaptcha_required", account_name
+                                    )
+                                    return {}
+                            except Exception:
+                                pass
+
                         if "connect.linux.do" in current_url:
                             try:
-                                approve = page.locator(RUNAWAYTIME_APPROVE_SELECTOR).first
-                                if await approve.count() > 0:
-                                    await approve.click(timeout=4000)
+                                clicked_approve, _ = await _click_first(page, RUNAWAYTIME_APPROVE_SELECTORS)
+                                if clicked_approve:
                                     approve_clicked = True
                                     await page.wait_for_timeout(1200)
+                            except Exception:
+                                pass
+
+                        # Sometimes callback chain gets stuck on /login; re-enter oauth flow periodically.
+                        if (
+                            current_url.startswith(f"{RUNAWAYTIME_FULI_BASE_URL}/login")
+                            and _ > 0
+                            and _ % 25 == 0
+                        ):
+                            try:
+                                await page.goto(
+                                    f"{RUNAWAYTIME_FULI_BASE_URL}/api/oauth/linuxdo",
+                                    wait_until="domcontentloaded",
+                                )
+                                await page.wait_for_timeout(1200)
                             except Exception:
                                 pass
 
@@ -282,6 +383,68 @@ async def _get_runawaytime_fuli_cookies_via_linuxdo(
     except Exception as exc:
         print(f"❌ {account_name}: fuli LinuxDo login exception - {exc}")
         return {}
+
+
+def _validate_runawaytime_fuli_cookies(
+    account_name: str,
+    cookies: dict,
+    http_proxy: str | None,
+) -> bool:
+    """Validate whether a cookie set can access fuli.hxi.me check-in API."""
+    if not cookies:
+        return False
+
+    session = curl_requests.Session(proxy=http_proxy, timeout=20)
+    try:
+        session.cookies.update(cookies)
+        session.cookies.set("i18next", "en")
+        headers = {
+            "accept": "application/json, text/plain, */*",
+            "accept-language": "en,en-US;q=0.9,zh;q=0.8",
+            "cache-control": "no-cache",
+            "pragma": "no-cache",
+            "referer": "https://fuli.hxi.me/",
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
+            "user-agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+            ),
+        }
+        resp = session.get("https://fuli.hxi.me/api/checkin/status", headers=headers, timeout=20)
+        if resp.status_code != 200:
+            print(
+                f"⚠️ {account_name}: runtime cookies rejected for fuli "
+                f"(status={resp.status_code})"
+            )
+            return False
+
+        data = response_resolve(resp, "validate_runawaytime_fuli_cookies", account_name)
+        if not isinstance(data, dict):
+            print(f"⚠️ {account_name}: runtime cookies rejected for fuli (invalid json)")
+            return False
+
+        # fuli API normally returns keys like checked/remaining/success.
+        if any(key in data for key in ("checked", "remaining", "success")):
+            return True
+        if isinstance(data.get("data"), dict):
+            nested = data["data"]
+            if any(key in nested for key in ("checked", "remaining", "success")):
+                return True
+
+        message = str(data.get("message", "")).lower()
+        if "未登录" in message or "login" in message or "unauthorized" in message:
+            print(f"⚠️ {account_name}: runtime cookies rejected for fuli (not logged in)")
+            return False
+
+        print(f"⚠️ {account_name}: runtime cookies rejected for fuli (unexpected payload)")
+        return False
+    except Exception as exc:
+        print(f"⚠️ {account_name}: runtime cookies validation error for fuli - {exc}")
+        return False
+    finally:
+        session.close()
 
 
 async def get_runawaytime_cdk(
@@ -313,7 +476,11 @@ async def get_runawaytime_cdk(
             f"ℹ️ {account_name}: trying runtime cookies from check-in flow "
             f"(keys={list(runtime_cookies_dict.keys())[:6]})"
         )
-        fuli_cookies = runtime_cookies_dict
+        if _validate_runawaytime_fuli_cookies(account_name, runtime_cookies_dict, http_proxy):
+            print(f"✅ {account_name}: runtime cookies accepted for fuli")
+            fuli_cookies = runtime_cookies_dict
+        else:
+            print(f"⚠️ {account_name}: runtime cookies not valid for fuli, fallback to LinuxDo/manual cookies")
 
     linux_do_accounts = account_config.linux_do or []
     max_wheel_spins = _to_non_negative_int(account_config.get("runaway_max_wheel_spins", 0), default=0)

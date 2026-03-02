@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from curl_cffi import requests as curl_requests
 
+from utils.get_headers import get_curl_cffi_impersonate
 from utils.http_utils import proxy_resolve, response_resolve
 
 if TYPE_CHECKING:
@@ -24,7 +25,7 @@ def get_newapi_check_in_status(
     cookies: dict,
     headers: dict,
     path: str = "/api/user/checkin",
-    impersonate: str = "firefox135",
+    impersonate: str | None = None,
 ) -> bool:
     """
     查询标准 newapi 签到状态，自动拼接当前月份
@@ -35,7 +36,7 @@ def get_newapi_check_in_status(
         cookies: cookies 字典
         headers: 请求头字典
         path: 签到状态接口路径，默认为 "/api/user/checkin"
-        impersonate: curl_cffi 浏览器指纹模拟，默认为 "firefox135"
+        impersonate: curl_cffi 浏览器指纹模拟；为 None 时根据 User-Agent 自动推断
 
     Returns:
         bool: 今日是否已签到
@@ -51,7 +52,8 @@ def get_newapi_check_in_status(
     print(f"🔍 {account_name}: Getting check-in status")
 
     try:
-        session = curl_requests.Session(impersonate=impersonate, proxy=http_proxy, timeout=30)
+        resolved_impersonate = impersonate or get_curl_cffi_impersonate(headers.get("User-Agent", ""))
+        session = curl_requests.Session(impersonate=resolved_impersonate, proxy=http_proxy, timeout=30)
         try:
             session.cookies.update(cookies)
             response = session.get(
@@ -100,7 +102,7 @@ def get_newapi_check_in_status(
 
 def create_newapi_check_in_status(
     path: str = "/api/user/checkin",
-    impersonate: str = "firefox135",
+    impersonate: str | None = None,
 ):
     """
     创建一个标准 newapi 签到状态查询函数
@@ -109,7 +111,7 @@ def create_newapi_check_in_status(
 
     Args:
         path: 签到状态接口路径，默认为 "/api/user/checkin"
-        impersonate: curl_cffi 浏览器指纹模拟，默认为 "firefox135"
+        impersonate: curl_cffi 浏览器指纹模拟；为 None 时根据 User-Agent 自动推断
 
     Returns:
         Callable: 签到状态查询函数，签名为 (provider_config, account_config, cookies, headers) -> bool

@@ -799,6 +799,18 @@ class CheckIn:
             else:
                 error_msg = json_data.get("msg", json_data.get("message", "Unknown error"))
                 print(f"❌ {self.account_name}: Check-in failed - {error_msg}")
+                error_text = str(error_msg).lower()
+                if (
+                    "turnstile" in error_text
+                    or "人机验证" in error_text
+                    or "token 为空" in error_text
+                    or "captcha" in error_text
+                ):
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "requires_turnstile": True,
+                    }
                 return {"success": False, "error": error_msg}
         else:
             print(f"❌ {self.account_name}: Check-in failed - HTTP {response.status_code}")
@@ -1201,19 +1213,40 @@ class CheckIn:
                         # 未签到，执行签到
                         check_in_result = self.execute_check_in(session, headers, api_user)
                         if not check_in_result.get("success"):
-                            return False, {"error": check_in_result.get("error", "Check-in failed")}
+                            if (
+                                check_in_result.get("requires_turnstile")
+                                and self.provider_config.name == "runawaytime"
+                                and self.provider_config.needs_manual_topup()
+                            ):
+                                print(
+                                    f"⚠️ {self.account_name}: Check-in requires Turnstile, "
+                                    "skip hard-fail and continue topup flow for runawaytime"
+                                )
+                            else:
+                                return False, {"error": check_in_result.get("error", "Check-in failed")}
                         # 签到成功后再次查询状态（显示最新状态）
-                        check_in_status_func(
-                            provider_config=self.provider_config,
-                            account_config=self.account_config,
-                            cookies=cookies,
-                            headers=headers,
-                        )
+                        if check_in_result.get("success"):
+                            check_in_status_func(
+                                provider_config=self.provider_config,
+                                account_config=self.account_config,
+                                cookies=cookies,
+                                headers=headers,
+                            )
                 else:
                     # 没有配置签到状态查询函数，直接执行签到
                     check_in_result = self.execute_check_in(session, headers, api_user)
                     if not check_in_result.get("success"):
-                        return False, {"error": check_in_result.get("error", "Check-in failed")}
+                        if (
+                            check_in_result.get("requires_turnstile")
+                            and self.provider_config.name == "runawaytime"
+                            and self.provider_config.needs_manual_topup()
+                        ):
+                            print(
+                                f"⚠️ {self.account_name}: Check-in requires Turnstile, "
+                                "skip hard-fail and continue topup flow for runawaytime"
+                            )
+                        else:
+                            return False, {"error": check_in_result.get("error", "Check-in failed")}
             else:
                 print(f"ℹ️ {self.account_name}: Check-in completed automatically (triggered by user info request)")
 
