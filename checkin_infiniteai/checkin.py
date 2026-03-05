@@ -93,6 +93,24 @@ FAIL_HINTS = [
     "failed",
     "error",
 ]
+LOGIN_REQUIRED_HINTS = [
+    "你需要先登录才能继续",
+    "管理员登录",
+    "admin login",
+    "sign in to continue",
+    "使用 linux.do 登录",
+    "linux.do 登录",
+]
+AUTH_PAGE_HINTS = [
+    "立即签到",
+    "今日已签到",
+    "签到日历",
+    "奖励范围",
+    "check in now",
+    "already checked in today",
+    "check-in calendar",
+    "reward range",
+]
 
 
 @dataclass
@@ -219,24 +237,55 @@ class InfiniteAICheckIn:
     async def _is_logged_in(self, page) -> bool:
         try:
             resp = await self._fetch_json(page, "/api/admin/session")
-            if resp.get("status") != 200:
-                return False
             payload = resp.get("json")
-            if not isinstance(payload, dict):
-                return False
-            if payload.get("authenticated") is True:
-                return True
-            if isinstance(payload.get("user"), dict):
-                return True
-            data_node = payload.get("data")
-            if isinstance(data_node, dict):
-                if data_node.get("authenticated") is True:
-                    return True
-                if isinstance(data_node.get("user"), dict):
-                    return True
-            return any("user" in mapping and isinstance(mapping.get("user"), dict) for mapping in self._iter_mappings(payload))
+            if resp.get("status") == 200 and isinstance(payload, dict):
+                for mapping in self._iter_mappings(payload):
+                    if mapping.get("authenticated") is True or mapping.get("loggedIn") is True:
+                        return True
+                    if isinstance(mapping.get("user"), dict):
+                        return True
+                    if mapping.get("error"):
+                        continue
+                    username = str(mapping.get("username") or "").strip()
+                    email = str(mapping.get("email") or "").strip()
+                    user_id = mapping.get("userId", mapping.get("id"))
+                    if username or email:
+                        return True
+                    if isinstance(user_id, int) and user_id > 0:
+                        return True
+                    if mapping.get("success") is True and mapping.get("data") not in (None, "", [], {}):
+                        return True
+
+                msg = str(payload.get("message") or payload.get("error") or resp.get("text") or "").lower()
+                if self._text_has_any(msg, LOGIN_REQUIRED_HINTS):
+                    return False
         except Exception:
-            return False
+            pass
+
+        try:
+            content = await page.evaluate("""() => (document.body?.innerText || "").replace(/\\s+/g, " ").slice(0, 4000)""")
+            if self._text_has_any(content, AUTH_PAGE_HINTS):
+                return True
+            if self._text_has_any(content, LOGIN_REQUIRED_HINTS):
+                return False
+        except Exception:
+            pass
+
+        try:
+            cookies = await page.context.cookies([BASE_URL])
+            for item in cookies:
+                name = str(item.get("name") or "").strip().lower()
+                value = str(item.get("value") or "").strip()
+                if not name or not value:
+                    continue
+                if name in {"session", "sid", "next-auth.session-token", "__secure-next-auth.session-token"}:
+                    return True
+                if ("session" in name or "auth" in name) and len(value) > 16:
+                    return True
+        except Exception:
+            pass
+
+        return False
 
     async def _extract_feedback_text(self, page) -> str:
         for selector in FEEDBACK_SELECTORS:
@@ -403,34 +452,53 @@ class InfiniteAICheckIn:
             except Exception:
                 return False, "linuxdo auth entry not found"
         login_submitted = False
+        submit_attempts = 0
+        approve_attempts = 0
+        last_submit_loop = -999
+        last_feedback = ""
         for loop_idx in range(220):
             if await self._is_logged_in(page):
                 self.auth_source = "linux.do"
                 return True, f"linuxdo login success (trigger={trigger})"
+
+            feedback = await self._extract_feedback_text(page)
+            if feedback:
+                last_feedback = feedback
+
             if await self._is_cf_challenge_page(page):
                 await self._solve_cf_interstitial(page)
                 await page.wait_for_timeout(1200)
                 continue
             url = page.url.lower()
-            if loop_idx in {10, 40} and "/login" in url and "linux.do" not in url:
+            if loop_idx in {10, 40, 80, 120, 160} and "/login" in url and "linux.do" not in url:
                 try:
                     await page.goto(f"{BASE_URL}/api/admin/login/linuxdo?next=%2Fcheckin", wait_until="domcontentloaded")
                     await page.wait_for_timeout(1000)
                     continue
                 except Exception:
                     pass
-            if "linux.do/login" in url and not login_submitted:
-                ok, _ = await self._submit_linuxdo_login(page)
-                login_submitted = ok
+            if "linux.do/login" in url and ((not login_submitted) or (loop_idx - last_submit_loop) >= 35):
+                ok, submit_msg = await self._submit_linuxdo_login(page)
+                if ok:
+                    login_submitted = True
+                    submit_attempts += 1
+                    last_submit_loop = loop_idx
+                    last_feedback = submit_msg
             if "connect.linux.do" in url:
                 try:
                     approve = page.locator(APPROVE_BUTTON_SELECTOR).first
                     if await approve.count() > 0:
                         await approve.click(timeout=4000)
+                        approve_attempts += 1
                 except Exception:
                     pass
             await page.wait_for_timeout(1200)
-        return False, f"linuxdo login timeout (url={page.url})"
+        return (
+            False,
+            "linuxdo login timeout "
+            f"(url={page.url}, submitted={login_submitted}, submit_attempts={submit_attempts}, "
+            f"approve_attempts={approve_attempts}, feedback={last_feedback[:80]})",
+        )
 
     async def _is_already_by_ui(self, page) -> bool:
         try:
@@ -562,13 +630,17 @@ class InfiniteAICheckIn:
                     except Exception as exc:
                         details.append(f"[cache] save failed: {exc}")
                 else:
-                    ok, msg = await self._login_via_user(page)
-                    details.append(f"[login-user] {msg}")
-                    if not ok:
-                        ok, msg = await self._login_via_linuxdo(page)
-                        details.append(f"[login-linuxdo] {msg}")
-                        if not ok:
-                            return False, {"error": "login failed", "details": details, "auth_source": self.auth_source}
+                    user_ok, user_msg = await self._login_via_user(page)
+                    details.append(f"[login-user] {user_msg}")
+                    if not user_ok:
+                        linuxdo_ok, linuxdo_msg = await self._login_via_linuxdo(page)
+                        details.append(f"[login-linuxdo] {linuxdo_msg}")
+                        if not linuxdo_ok:
+                            return False, {
+                                "error": f"login failed: user={user_msg}; linuxdo={linuxdo_msg}",
+                                "details": details,
+                                "auth_source": self.auth_source,
+                            }
                     try:
                         await context.storage_state(path=storage_state_path)
                         details.append("[cache] storage-state saved")
