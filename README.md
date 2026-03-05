@@ -13,6 +13,9 @@
 - `checkin-qaq-al.yml`
   - `qaq.al` 自动签到
   - 支持 LinuxDo 自动登录并自动获取/刷新 `sid`
+- `checkin-infiniteai.yml`
+  - `infiniteai.cc` 自动签到
+  - 支持 `cookies`、账号密码、LinuxDo 登录
 - `immortality.yml`
   - 定时保活，避免 workflow 长期不触发
 
@@ -27,6 +30,7 @@
 - `cookies` 认证改为数组模型，支持同一账号下多个 cookie 身份
 - `hybgzs` 支持自动签到 + 大转盘
 - `qaq.al` 支持自动获取 `sid`（LinuxDo 优先，`sid` 回退）
+- `infiniteai.cc` 独立工作流（非 NewAPI 站点）
 - 通知从长文本明细改为统一摘要模板（更短、更可读）
 - `get_cdk_cookies` 仍保留可用（如 runawaytime/b4u 相关链路）
 
@@ -116,6 +120,33 @@
 - `tier`：账号级参数，写在 `ACCOUNTS_QAQ_AL[*].tier`，默认 `4`
 - `PROXY_QAQ_AL`
 
+### `infiniteai` 工作流
+
+`ACCOUNTS_INFINITEAI`：
+
+```json
+[
+  {
+    "name": "infinite-main",
+    "user": [
+      {"username": "your_username_or_email", "password": "your_password"}
+    ]
+  },
+  {
+    "name": "infinite-cookie",
+    "cookies": {"session": "your_session_cookie"}
+  },
+  {
+    "name": "infinite-linuxdo",
+    "linux.do": true
+  }
+]
+```
+
+可选：
+- `PROXY_INFINITEAI`
+- `linux.do` 支持 `true | object | array`（`true` 时会使用 `ACCOUNTS_LINUX_DO`）
+
 ## 认证执行顺序（主流程）
 
 单个账号内会按顺序尝试以下认证方式，结果独立统计：
@@ -138,6 +169,7 @@
 - LinuxDo OAuth 状态缓存
 - `hybgzs` 相关状态
 - `qaq.al` 的 `sid`/状态缓存
+- `infiniteai` 登录状态缓存
 - `balance_hash*.txt`（用于余额变化通知去重）
 
 ## 通知摘要格式（新）

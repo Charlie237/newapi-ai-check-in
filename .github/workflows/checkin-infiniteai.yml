@@ -1,0 +1,130 @@
+name: infiniteai auto checkin
+
+on:
+  schedule:
+    - cron: "0 */8 * * *"
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: "Run in debug mode"
+        required: false
+        type: boolean
+
+concurrency:
+  group: infiniteai-checkin-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checkin:
+    permissions:
+      id-token: write
+      contents: read
+    runs-on: windows-2025
+    environment: production
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+    steps:
+      - name: Set Beijing timezone
+        uses: szenius/set-timezone@v2.0
+        with:
+          timezoneWindows: "China Standard Time"
+
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache uv dependencies
+        uses: actions/cache@v4
+        id: uv-cache
+        with:
+          path: |
+            ~/.cache/uv
+            .venv
+          key: ${{ runner.os }}-uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-uv-
+
+      - name: Install dependencies
+        if: steps.uv-cache.outputs.cache-hit != 'true'
+        run: uv sync
+
+      - name: Read Camoufox version
+        id: camoufox-version
+        run: |
+          $version = uv run python -c "import importlib.metadata; print(importlib.metadata.version('camoufox'))"
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          echo "Camoufox version: $version"
+
+      - name: Cache Camoufox browser
+        uses: actions/cache@v4
+        id: camoufox-cache
+        with:
+          path: ~\AppData\Local\camoufox
+          key: ${{ runner.os }}-camoufox-${{ steps.camoufox-version.outputs.version }}
+          restore-keys: |
+            ${{ runner.os }}-camoufox-
+
+      - name: Install Camoufox browser
+        if: steps.camoufox-cache.outputs.cache-hit != 'true'
+        run: uv run camoufox fetch
+
+      - name: Restore storage-state cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            storage-states
+          key: infiniteai-storage-state-${{ hashFiles('storage-states/infiniteai_*_storage_state.json') }}
+          restore-keys: |
+            infiniteai-storage-state-
+
+      - name: Run infiniteai checkin
+        env:
+          ACCOUNTS_INFINITEAI: ${{ secrets.ACCOUNTS_INFINITEAI }}
+          ACCOUNTS_LINUX_DO: ${{ secrets.ACCOUNTS_LINUX_DO }}
+          PROXY_INFINITEAI: ${{ secrets.PROXY_INFINITEAI }}
+          DEBUG: ${{ github.event_name == 'workflow_dispatch' && inputs.debug || vars.DEBUG || 'false' }}
+          BALANCE_CHANGE_MODE: ${{ vars.BALANCE_CHANGE_MODE || 'strict' }}
+          DINGDING_WEBHOOK: ${{ secrets.DINGDING_WEBHOOK }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          CUSTOM_SMTP_SERVER: ${{ secrets.CUSTOM_SMTP_SERVER }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          SERVERPUSHKEY: ${{ secrets.SERVERPUSHKEY }}
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          WEIXIN_WEBHOOK: ${{ secrets.WEIXIN_WEBHOOK }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          $utf8 = [System.Text.UTF8Encoding]::new($false)
+          [Console]::InputEncoding = $utf8
+          [Console]::OutputEncoding = $utf8
+          $OutputEncoding = $utf8
+          chcp 65001 > $null
+          uv run python -u checkin_infiniteai/main.py
+
+      - name: Save storage-state cache
+        if: hashFiles('storage-states/infiniteai_*_storage_state.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            storage-states
+          key: infiniteai-storage-state-${{ hashFiles('storage-states/infiniteai_*_storage_state.json') }}
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: infiniteai-artifacts-${{ github.run_number }}
+          path: |
+            logs/
+            screenshots/
+          if-no-files-found: ignore
+          retention-days: 7
