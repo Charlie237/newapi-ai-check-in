@@ -271,20 +271,6 @@ class InfiniteAICheckIn:
         except Exception:
             pass
 
-        try:
-            cookies = await page.context.cookies([BASE_URL])
-            for item in cookies:
-                name = str(item.get("name") or "").strip().lower()
-                value = str(item.get("value") or "").strip()
-                if not name or not value:
-                    continue
-                if name in {"session", "sid", "next-auth.session-token", "__secure-next-auth.session-token"}:
-                    return True
-                if ("session" in name or "auth" in name) and len(value) > 16:
-                    return True
-        except Exception:
-            pass
-
         return False
 
     async def _extract_feedback_text(self, page) -> str:
