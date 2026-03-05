@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - feat/infiniteai-checkin-workflow
-    paths:
-      - "checkin_infiniteai/**"
-      - ".github/workflows/checkin-infiniteai.yml"
   schedule:
     - cron: "0 */8 * * *"
   workflow_dispatch:
