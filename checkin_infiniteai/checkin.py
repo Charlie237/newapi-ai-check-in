@@ -5,6 +5,7 @@ Standalone infiniteai.cc check-in runner.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import re
@@ -342,13 +343,19 @@ class InfiniteAICheckIn:
 
     async def _solve_cf_interstitial(self, page) -> bool:
         try:
-            async with ClickSolver(
-                framework=FrameworkType.CAMOUFOX,
-                page=page,
-                max_attempts=3,
-                attempt_delay=3,
-            ) as solver:
-                await solver.solve_captcha(captcha_container=page, captcha_type=CaptchaType.CLOUDFLARE_INTERSTITIAL)
+            async def _solve_once() -> None:
+                async with ClickSolver(
+                    framework=FrameworkType.CAMOUFOX,
+                    page=page,
+                    max_attempts=3,
+                    attempt_delay=3,
+                ) as solver:
+                    await solver.solve_captcha(
+                        captcha_container=page,
+                        captcha_type=CaptchaType.CLOUDFLARE_INTERSTITIAL,
+                    )
+
+            await asyncio.wait_for(_solve_once(), timeout=35)
             await page.wait_for_timeout(2000)
             return True
         except Exception:
